@@ -1,0 +1,44 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Clarify — Context-Anchored AI Learning</title>
+  <link rel="preconnect" href="https://api.fontshare.com" />
+  <link href="https://api.fontshare.com/v2/css?f[]=satoshi@400,500,700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="./src/styles.css" />
+</head>
+<body>
+  <div id="app" class="app-shell">
+    <header class="app-header">
+      <div class="header-inner">
+        <div class="brand">
+          <span class="brand-dot"></span>
+          <span class="brand-name">Clarify</span>
+        </div>
+      </div>
+    </header>
+
+    <main id="workspace-grid" class="workspace-grid">
+      <section id="main-spine" class="main-spine" aria-label="Main Learning Thread">
+        <div id="chat-stream" class="chat-stream"></div>
+      </section>
+    </main>
+
+    <footer class="prompt-dock">
+      <div class="prompt-dock-inner">
+        <form id="prompt-form" class="prompt-form">
+          <input
+            type="text"
+            id="prompt-input"
+            class="prompt-input"
+            placeholder="Ask a question..."
+            autocomplete="off"
+          />
+          <button type="submit" class="prompt-submit">Ask</button>
+        </form>
+      </div>
+    </footer>
+  </div>
+</body>
+</html>

@@ -1,0 +1,128 @@
+:root {
+  --font-main: 'Satoshi', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --bg-page: #f9fafb;
+  --bg-white: #ffffff;
+  --bg-soft: #f3f4f6;
+  --text-black: #0f172a;
+  --text-muted: #475569;
+  --border-hairline: rgba(15, 23, 42, 0.09);
+}
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+body {
+  font-family: var(--font-main);
+  background: var(--bg-page);
+  color: var(--text-black);
+  height: 100vh;
+  overflow: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-shell {
+  display: flex;
+  flex-direction: column;
+  height: 100vh;
+}
+
+.app-header {
+  background: var(--bg-white);
+  border-bottom: 1px solid var(--border-hairline);
+  padding: 0.85rem 1.5rem;
+}
+
+.header-inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 0.55rem;
+}
+
+.brand-dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: var(--text-black);
+}
+
+.brand-name {
+  font-weight: 700;
+  font-size: 1.05rem;
+}
+
+.workspace-grid {
+  flex: 1;
+  max-width: 1200px;
+  width: 100%;
+  margin: 0 auto;
+  padding: 1.25rem 1.5rem;
+  overflow: hidden;
+}
+
+.main-spine {
+  background: var(--bg-white);
+  border: 1px solid var(--border-hairline);
+  border-radius: 16px;
+  height: 100%;
+  overflow-y: auto;
+  padding: 1.5rem;
+}
+
+.chat-stream {
+  display: flex;
+  flex-direction: column;
+  gap: 1.25rem;
+  max-width: 720px;
+  margin: 0 auto;
+}
+
+.prompt-dock {
+  background: var(--bg-white);
+  border-top: 1px solid var(--border-hairline);
+  padding: 0.75rem 1.5rem 1rem;
+}
+
+.prompt-dock-inner {
+  max-width: 760px;
+  margin: 0 auto;
+}
+
+.prompt-form {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: var(--bg-soft);
+  border: 1px solid var(--border-hairline);
+  border-radius: 999px;
+  padding: 0.35rem 0.4rem 0.35rem 1rem;
+}
+
+.prompt-input {
+  flex: 1;
+  border: none;
+  background: transparent;
+  font-family: inherit;
+  font-size: 0.92rem;
+  outline: none;
+}
+
+.prompt-submit {
+  background: var(--text-black);
+  color: #ffffff;
+  border: none;
+  border-radius: 999px;
+  padding: 0.5rem 1.15rem;
+  font-weight: 600;
+  cursor: pointer;
+}

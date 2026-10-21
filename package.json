@@ -1,0 +1,14 @@
+{
+  "name": "clarify-ai-learning",
+  "version": "0.1.0",
+  "description": "Context-aware AI learning interface that automatically isolates side-clarifications into anchored buckets so the main learning thread stays clean.",
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node server.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "license": "MIT"
+}
