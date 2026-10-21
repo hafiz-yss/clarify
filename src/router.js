@@ -13,12 +13,12 @@ const STOP_WORDS = new Set([
   'wait', 'about', 'that', 'this', 'it', 'with', 'simple', 'terms', 'example', 'Wait'
 ]);
 
-const CLARIFICATION_PATTERNS = /^(wait|what\b|why\b|how\s+does|what's|whats|mean\b|explain\b|clarify\b|confused|don't\s+understand|example\s+of)/i;
+const CLARIFICATION_PATTERNS = /^(wait\b|what\b|why\b|how\s+does|how\s+do|how\s+is|what's|whats|mean\b|explain\b|clarify\b|confused|don't\s+understand|can\s+you\s+give|give\s+an?\s+example|example\s+of|for\s+example)/i;
 
 /**
  * Find the best matching phrase in a message's concepts or sentences
  */
-export function classifyPromptIntent(promptText, mainMessages, buckets, activeBucketId) {
+export function classifyPromptIntent(promptText, mainMessages, buckets, activeBucketId, lastBucketId) {
   const clean = promptText.trim();
   const lower = clean.toLowerCase();
 
@@ -52,19 +52,21 @@ export function classifyPromptIntent(promptText, mainMessages, buckets, activeBu
     }
   }
 
-  // 2. If a bucket is currently open and the user asks a follow-up ("why?", "can you give an example?", etc.)
-  if (activeBucketId && buckets[activeBucketId] && !buckets[activeBucketId].folded) {
-    const activeBucket = buckets[activeBucketId];
-    const isProgressionAttempt = /^(next\b|now\s+let's|move\s+on|okay\s+now|tell\s+me\s+about\s+a\s+new)/i.test(clean);
-    if (!isProgressionAttempt && (CLARIFICATION_PATTERNS.test(clean) || tokens.length <= 7)) {
+  // 2. If a bucket is open OR was recently used, and the user asks a follow-up ("why?", "can you give an example?", etc.)
+  //    automatically route to and open that bucket!
+  const candidateBucketId = activeBucketId || lastBucketId || Object.keys(buckets).pop();
+  if (candidateBucketId && buckets[candidateBucketId]) {
+    const targetBucket = buckets[candidateBucketId];
+    const isProgressionAttempt = /^(next\b|now\s+let's|move\s+on|okay\s*,?\s*now|show\s+me\s+how\s+decryption|tell\s+me\s+about\s+a\s+new)/i.test(clean);
+    if (!isProgressionAttempt && (CLARIFICATION_PATTERNS.test(clean) || tokens.length <= 6)) {
       return {
         intent: 'BUCKET_DRILLDOWN',
-        bucketId: activeBucketId,
-        targetMessageId: activeBucket.parentMessageId,
-        anchorPhrase: activeBucket.anchorPhrase,
+        bucketId: candidateBucketId,
+        targetMessageId: targetBucket.parentMessageId,
+        anchorPhrase: targetBucket.anchorPhrase,
         cannedAnswer:
-          activeBucket.drilldownAnswer ||
-          `Great follow-up on "${activeBucket.anchorPhrase}". Think of it with small concrete numbers first: each step stays self-contained here in this bucket so your main lesson on the left stays completely uncluttered.`
+          targetBucket.drilldownAnswer ||
+          `Great follow-up on "${targetBucket.anchorPhrase}". Think of it with small concrete numbers first: each step stays self-contained here in this bucket so your main lesson on the left stays completely uncluttered.`
       };
     }
   }

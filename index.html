@@ -9,52 +9,53 @@
   <link rel="stylesheet" href="./src/styles.css" />
 </head>
 <body>
-  <div id="app" class="app-shell">
-    <header class="app-header">
-      <div class="header-inner">
+  <div id="workspace-grid" class="workspace-shell">
+    <section id="main-spine" class="main-pane" aria-label="Main Learning Thread">
+      <header class="pane-topbar">
         <div class="brand">
           <span class="brand-dot"></span>
           <span class="brand-name">Clarify</span>
-          <span class="brand-tag">Self-Organizing AI Learning Prototype</span>
+          <span class="topic-divider">/</span>
+          <span class="topic-title">RSA Public-Key Cryptography</span>
         </div>
-      </div>
-    </header>
+      </header>
 
-    <main id="workspace-grid" class="workspace-grid">
-      <section id="main-spine" class="main-spine" aria-label="Main Learning Thread">
+      <div class="main-scroll" id="main-scroll">
         <div id="chat-stream" class="chat-stream"></div>
-      </section>
-
-      <aside id="bucket-panel" class="bucket-panel hidden" aria-label="Clarification Bucket">
-      </aside>
-    </main>
-
-    <footer class="prompt-dock">
-      <div class="prompt-dock-inner">
-        <div id="suggestion-chips" class="suggestion-chips">
-          <button type="button" class="try-chip" data-prompt="Wait, what is Euler's totient function?">
-            What is Euler's totient function?
-          </button>
-          <button type="button" class="try-chip" data-prompt="Why do we need a modular multiplicative inverse?">
-            Why a modular multiplicative inverse?
-          </button>
-          <button type="button" class="try-chip" data-prompt="Okay, now show me how decryption works">
-            How does decryption work?
-          </button>
-        </div>
-
-        <form id="prompt-form" class="prompt-form">
-          <input
-            type="text"
-            id="prompt-input"
-            class="prompt-input"
-            placeholder="Ask a question..."
-            autocomplete="off"
-          />
-          <button type="submit" class="prompt-submit">Ask</button>
-        </form>
       </div>
-    </footer>
+
+      <footer class="prompt-dock">
+        <div class="prompt-dock-inner">
+          <div id="suggestion-chips" class="suggestion-chips">
+            <button type="button" class="try-chip" data-prompt="Wait, what is Euler's totient function?">
+              What is Euler's totient function?
+            </button>
+            <button type="button" class="try-chip" data-prompt="Why do we need a modular multiplicative inverse?">
+              Why a modular multiplicative inverse?
+            </button>
+            <button type="button" class="try-chip" data-prompt="Okay, now show me how decryption works">
+              How does decryption work?
+            </button>
+          </div>
+
+          <form id="prompt-form" class="prompt-composer">
+            <input
+              type="text"
+              id="prompt-input"
+              class="prompt-input"
+              placeholder="Ask a question or clarify any concept..."
+              autocomplete="off"
+            />
+            <button type="submit" class="btn btn-primary prompt-submit">Ask</button>
+          </form>
+        </div>
+      </footer>
+    </section>
+
+    <aside id="bucket-panel" class="side-workbench" aria-label="Clarification Bucket" aria-hidden="true">
+      <div id="bucket-panel-inner" class="side-workbench-card">
+      </div>
+    </aside>
   </div>
 
   <script type="module" src="./src/app.js"></script>
