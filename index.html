@@ -15,6 +15,7 @@
         <div class="brand">
           <span class="brand-dot"></span>
           <span class="brand-name">Clarify</span>
+          <span class="brand-tag">Self-Organizing AI Learning Prototype</span>
         </div>
       </div>
     </header>
@@ -23,10 +24,25 @@
       <section id="main-spine" class="main-spine" aria-label="Main Learning Thread">
         <div id="chat-stream" class="chat-stream"></div>
       </section>
+
+      <aside id="bucket-panel" class="bucket-panel hidden" aria-label="Clarification Bucket">
+      </aside>
     </main>
 
     <footer class="prompt-dock">
       <div class="prompt-dock-inner">
+        <div id="suggestion-chips" class="suggestion-chips">
+          <button type="button" class="try-chip" data-prompt="Wait, what is Euler's totient function?">
+            What is Euler's totient function?
+          </button>
+          <button type="button" class="try-chip" data-prompt="Why do we need a modular multiplicative inverse?">
+            Why a modular multiplicative inverse?
+          </button>
+          <button type="button" class="try-chip" data-prompt="Okay, now show me how decryption works">
+            How does decryption work?
+          </button>
+        </div>
+
         <form id="prompt-form" class="prompt-form">
           <input
             type="text"
@@ -40,5 +56,7 @@
       </div>
     </footer>
   </div>
+
+  <script type="module" src="./src/app.js"></script>
 </body>
 </html>
