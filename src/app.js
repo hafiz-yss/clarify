@@ -3,6 +3,7 @@ import { classifyPromptIntent } from './router.js';
 export const state = {
   activeBucketId: null,
   lastBucketId: null,
+  expandedFoldedGroups: {},
   buckets: {},
   mainMessages: [
     {
@@ -82,6 +83,10 @@ function formatAssistantTextWithAnchors(msg) {
 
 function foldActiveBucket() {
   if (state.activeBucketId && state.buckets[state.activeBucketId]) {
+    const parentMsgId = state.buckets[state.activeBucketId].parentMessageId;
+    if (parentMsgId) {
+      state.expandedFoldedGroups[parentMsgId] = false;
+    }
     state.lastBucketId = state.activeBucketId;
     state.buckets[state.activeBucketId].folded = true;
     state.activeBucketId = null;
@@ -100,18 +105,35 @@ function render(options = {}) {
         (b) => b.parentMessageId === msg.id && b.folded && b.items.length > 0
       );
 
+      const isGroupExpanded = Boolean(state.expandedFoldedGroups[msg.id]);
+      const countLabel =
+        foldedBuckets.length === 1 ? '1 Clarification' : `${foldedBuckets.length} Clarifications`;
+      const previewNames = foldedBuckets.map((b) => escapeHtml(b.anchorPhrase)).join(', ');
+
       const foldedHtml =
         foldedBuckets.length > 0
-          ? `<div class="folded-buckets-bar">
-              ${foldedBuckets
-                .map(
-                  (b) => `
-                <div class="folded-summary-item" data-bucket-id="${b.id}">
-                  <span><strong>${escapeHtml(b.anchorPhrase)}</strong> — ${escapeHtml(b.takeaway)}</span>
-                  <span class="folded-open-label">View (${b.items.length}) →</span>
-                </div>`
-                )
-                .join('')}
+          ? `<div class="folded-buckets-group ${isGroupExpanded ? 'is-expanded' : ''}">
+              <button type="button" class="folded-group-toggle" data-toggle-group="${msg.id}" aria-expanded="${isGroupExpanded}">
+                <span class="folded-group-meta">
+                  <span class="folded-group-count">${countLabel}</span>
+                  <span class="folded-group-dot">·</span>
+                  <span class="folded-group-names">${previewNames}</span>
+                </span>
+                <svg class="folded-group-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
+              </button>
+              <div class="folded-group-list">
+                <div class="folded-group-list-inner">
+                  ${foldedBuckets
+                    .map(
+                      (b) => `
+                    <div class="folded-summary-item" data-bucket-id="${b.id}">
+                      <span><strong>${escapeHtml(b.anchorPhrase)}</strong> — ${escapeHtml(b.takeaway)}</span>
+                      <span class="folded-open-label">View (${b.items.length}) →</span>
+                    </div>`
+                    )
+                    .join('')}
+                </div>
+              </div>
             </div>`
           : '';
 
