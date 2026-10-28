@@ -10,12 +10,49 @@
 </head>
 <body>
   <div id="workspace-grid" class="workspace-shell">
+    <!-- Collapsible Left Navigation Sidebar (like Claude / ChatGPT) -->
+    <aside id="nav-sidebar" class="nav-sidebar" aria-label="Navigation Sidebar" aria-hidden="true">
+      <div class="nav-sidebar-inner">
+        <div class="nav-sidebar-header">
+          <div class="brand">
+            <span class="brand-dot"></span>
+            <span class="brand-name">Clarify</span>
+          </div>
+          <button type="button" id="btn-close-sidebar" class="btn-icon btn-icon-close" aria-label="Close sidebar">
+            <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+          </button>
+        </div>
+
+        <button type="button" id="btn-new-chat" class="nav-new-chat-btn">
+          <svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          <span>New Thread</span>
+        </button>
+
+        <div class="nav-section">
+          <span class="nav-section-label">Threads</span>
+          <button type="button" class="nav-thread-item active">
+            RSA Public-Key Cryptography
+          </button>
+        </div>
+
+        <div class="nav-sidebar-footer">
+          <div class="nav-mode-row">
+            <span class="mode-status-dot"></span>
+            <span>Sandbox Mode</span>
+          </div>
+        </div>
+      </div>
+    </aside>
+
+    <div id="sidebar-backdrop" class="sidebar-backdrop"></div>
+
+    <!-- Left Column: Full-Height Main Learning Pane (Header + Stream + Floating Prompt Dock) -->
     <section id="main-spine" class="main-pane" aria-label="Main Learning Thread">
       <header class="pane-topbar">
-        <div class="brand">
-          <span class="brand-dot"></span>
-          <span class="brand-name">Clarify</span>
-          <span class="topic-divider">/</span>
+        <div class="topbar-left">
+          <button type="button" id="btn-open-sidebar" class="btn-icon btn-sidebar-toggle" title="Toggle sidebar" aria-label="Toggle sidebar">
+            <svg viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"></rect><line x1="9" y1="3" x2="9" y2="21"></line></svg>
+          </button>
           <span class="topic-title">RSA Public-Key Cryptography</span>
         </div>
       </header>
@@ -52,10 +89,17 @@
       </footer>
     </section>
 
+    <!-- Right Column: Full-Height Side Workbench (Claude Artifact-style proportion) -->
     <aside id="bucket-panel" class="side-workbench" aria-label="Clarification Bucket" aria-hidden="true">
       <div id="bucket-panel-inner" class="side-workbench-card">
+        <!-- Populated dynamically when a Clarification Bucket opens -->
       </div>
     </aside>
+
+    <!-- Floating Text-Selection "Clarify" Action Pill -->
+    <button type="button" id="selection-clarify-btn" class="selection-clarify-btn hidden" aria-label="Clarify selected text">
+      Clarify ↗
+    </button>
   </div>
 
   <script type="module" src="./src/app.js"></script>
