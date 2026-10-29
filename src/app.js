@@ -1,64 +1,35 @@
 /**
  * Clarify — Context-Anchored AI Learning Interface
  *
- * Demonstrates:
- *  1. Typing naturally in the bottom prompt bar (or dedicated bucket follow-up input)
- *  2. Automatic detection of Clarifications vs. Main Thread Progression
- *  3. Automatic highlighting of the anchor phrase in the parent lesson
- *  4. Smooth opening & closing of the tethered Side-Panel Bucket
- *  5. Clicking back on the Main Chat space (or pressing Esc) naturally folds the bucket
+ * Combines:
+ *  1. Blank New-Thread state & persistent multi-thread notebook (`src/storage.js`)
+ *  2. Interactive RSA Demo Thread (`src/router.js`) that runs locally & deterministically
+ *  3. Full-height 50/50 desktop workbench & iOS mobile bottom sheet with drag-to-dismiss
  */
 
 import { classifyPromptIntent } from './router.js';
-
-const INITIAL_MESSAGES = [
-  {
-    id: 'msg-1',
-    role: 'user',
-    rawText: 'Explain how RSA Public-Key Cryptography generates keys.'
-  },
-  {
-    id: 'msg-2',
-    role: 'assistant',
-    rawText:
-      "To generate an RSA key pair, your computer performs three core mathematical steps: First, it picks two large random prime numbers (p and q) and multiplies them to produce the public modulus n = p * q. Second, it computes Euler's totient function φ(n) = (p - 1)(q - 1), which counts how many positive integers up to n are coprime to n. Third, it chooses a public exponent e and calculates the private key d as the modular multiplicative inverse of e modulo φ(n).",
-    concepts: [
-      {
-        key: 'totient',
-        phrase: "Euler's totient function",
-        keywords: ['totient', 'euler', 'phi', 'coprime'],
-        explanation:
-          "Euler's totient function φ(n) simply counts how many numbers less than n share no common factors with n. Because p and q are prime, it's easy to compute if you know p and q: just (p - 1) × (q - 1). Without knowing p and q, it is practically impossible to calculate for huge numbers.",
-        takeaway: 'φ(n) = (p - 1)(q - 1); easy with primes p & q, infeasible without them.'
-      },
-      {
-        key: 'inverse',
-        phrase: 'modular multiplicative inverse',
-        keywords: ['inverse', 'modular', 'multiplicative', 'private key d', 'modulo'],
-        explanation:
-          'A modular multiplicative inverse d is the "undo button" for multiplication under clock arithmetic. When you multiply your public exponent e by d and divide by φ(n), the remainder is 1: (e × d) mod φ(n) = 1.',
-        takeaway: 'Private key d reverses public exponent e: (e × d) mod φ(n) = 1.'
-      },
-      {
-        key: 'modulus',
-        phrase: 'public modulus n = p * q',
-        keywords: ['modulus', 'prime', 'primes', 'multiply'],
-        explanation:
-          'Multiplying two primes (like 61 × 53 = 3233) takes microseconds, but factoring a 2048-bit modulus n back into p and q would take a classical supercomputer thousands of years. This one-way trapdoor is what makes RSA secure.',
-        takeaway: 'Multiplying p × q is instant; factoring n back into p & q is infeasible.'
-      }
-    ]
-  }
-];
+import {
+  DEMO_THREAD_ID,
+  DEMO_SUGGESTIONS,
+  isValidThreadId,
+  loadThreadIndex,
+  loadThreadData,
+  saveThreadData,
+  deleteThreadData,
+  resetDemoThread
+} from './storage.js';
 
 export const state = {
+  threadId: null, // null = Blank New Thread view
+  threadTitle: 'New Thread',
+  isDemo: false,
   activeBucketId: null,
   lastBucketId: null,
   expandedFoldedGroups: {},
   usedPrompts: new Set(),
   pendingSelection: null,
   buckets: {},
-  mainMessages: structuredClone(INITIAL_MESSAGES)
+  mainMessages: []
 };
 
 const workspaceGrid = document.getElementById('workspace-grid');
@@ -70,6 +41,8 @@ const bucketPanelInner = document.getElementById('bucket-panel-inner');
 const promptForm = document.getElementById('prompt-form');
 const promptInput = document.getElementById('prompt-input');
 const suggestionChips = document.getElementById('suggestion-chips');
+const topbarTopicTitle = document.getElementById('topbar-topic-title');
+const navThreadList = document.getElementById('nav-thread-list');
 const btnOpenSidebar = document.getElementById('btn-open-sidebar');
 const btnCloseSidebar = document.getElementById('btn-close-sidebar');
 const sidebarBackdrop = document.getElementById('sidebar-backdrop');
@@ -78,10 +51,128 @@ const selectionClarifyBtn = document.getElementById('selection-clarify-btn');
 
 function escapeHtml(str) {
   return String(str ?? '')
+    .replace(/\u0000/g, '')
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+/**
+ * Generate a strictly unique, sequential message ID (msg-1, msg-2, ...)
+ */
+function nextMessageId() {
+  let maxNum = 0;
+  for (const msg of state.mainMessages) {
+    const match = /^msg-(\d+)$/.exec(msg.id);
+    if (match) {
+      const n = Number(match[1]);
+      if (n > maxNum) maxNum = n;
+    }
+  }
+  return `msg-${maxNum + 1}`;
+}
+
+/**
+ * Read `?thread=<id>` from the browser URL (returns null on root `/` or if invalid)
+ */
+function getUrlThreadId() {
+  try {
+    const params = new URLSearchParams(window.location.search);
+    const raw = params.get('thread');
+    if (!raw) return null;
+    if (!isValidThreadId(raw)) {
+      syncUrlWithThread(null, { replace: true });
+      return null;
+    }
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Sync the browser URL bar (`/?thread=<id>` or `/`) with the active thread
+ */
+function syncUrlWithThread(threadId, { replace = false } = {}) {
+  try {
+    const url = new URL(window.location.href);
+    const current = url.searchParams.get('thread') || null;
+    if (current === (threadId || null)) return;
+
+    if (threadId) {
+      url.searchParams.set('thread', threadId);
+    } else {
+      url.searchParams.delete('thread');
+    }
+    const nextUrl = `${url.pathname}${url.search}${url.hash}`;
+    if (replace) {
+      window.history.replaceState({ threadId }, '', nextUrl);
+    } else {
+      window.history.pushState({ threadId }, '', nextUrl);
+    }
+  } catch {
+    // Ignore history restrictions in sandboxed environments
+  }
+}
+
+/**
+ * Persist the currently active thread to per-thread storage
+ */
+function persistCurrentThread() {
+  if (!state.threadId || state.mainMessages.length === 0) return;
+  saveThreadData({
+    id: state.threadId,
+    title: state.threadTitle,
+    isDemo: state.isDemo,
+    mainMessages: state.mainMessages,
+    buckets: state.buckets,
+    activeBucketId: state.activeBucketId,
+    lastBucketId: state.lastBucketId,
+    usedPrompts: Array.from(state.usedPrompts)
+  });
+}
+
+/**
+ * Switch to an existing thread by ID, or pass `null` to open the Blank New-Thread page
+ */
+function switchToThread(threadId, { fromPopState = false } = {}) {
+  state.pendingSelection = null;
+  state.expandedFoldedGroups = {};
+  if (selectionClarifyBtn) selectionClarifyBtn.classList.add('hidden');
+
+  if (!threadId) {
+    state.threadId = null;
+    state.threadTitle = 'New Thread';
+    state.isDemo = false;
+    state.activeBucketId = null;
+    state.lastBucketId = null;
+    state.usedPrompts = new Set();
+    state.buckets = {};
+    state.mainMessages = [];
+    if (!fromPopState) syncUrlWithThread(null);
+    render();
+    return;
+  }
+
+  const loaded = loadThreadData(threadId);
+  if (!loaded) {
+    syncUrlWithThread(null, { replace: true });
+    switchToThread(null, { fromPopState: true });
+    return;
+  }
+
+  state.threadId = loaded.id;
+  state.threadTitle = loaded.title || 'Learning Thread';
+  state.isDemo = Boolean(loaded.isDemo);
+  state.mainMessages = Array.isArray(loaded.mainMessages) ? loaded.mainMessages : [];
+  state.buckets = loaded.buckets || {};
+  state.activeBucketId = loaded.activeBucketId || null;
+  state.lastBucketId = loaded.lastBucketId || null;
+  state.usedPrompts = new Set(Array.isArray(loaded.usedPrompts) ? loaded.usedPrompts : []);
+  if (!fromPopState) syncUrlWithThread(loaded.id);
+  render();
 }
 
 /**
@@ -96,20 +187,18 @@ function formatAssistantTextWithAnchors(msg) {
     const safePhrase = escapeHtml(bucket.anchorPhrase);
     const isActive = state.activeBucketId === bucket.id && !bucket.folded;
     const count = bucket.items.length;
+    const safeBucketId = escapeHtml(bucket.id);
 
-    const replacement = `<mark class="concept-anchor ${isActive ? 'active-anchor' : ''}" data-bucket-id="${bucket.id}">${safePhrase}<span class="bucket-pill-badge" data-bucket-id="${bucket.id}">${count}</span></mark>`;
+    const replacement = `<mark class="concept-anchor ${isActive ? 'active-anchor' : ''}" data-bucket-id="${safeBucketId}">${safePhrase}<span class="bucket-pill-badge" data-bucket-id="${safeBucketId}">${count}</span></mark>`;
 
     const regex = new RegExp(safePhrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    html = html.replace(regex, replacement);
+    html = html.replace(regex, () => replacement);
   }
 
-  return `<p>${html}</p>`;
+  return html;
 }
 
-/**
- * Fold any currently active bucket smoothly
- */
-function foldActiveBucket() {
+function foldActiveBucketState() {
   if (state.activeBucketId && state.buckets[state.activeBucketId]) {
     const parentMsgId = state.buckets[state.activeBucketId].parentMessageId;
     if (parentMsgId) {
@@ -118,78 +207,168 @@ function foldActiveBucket() {
     state.lastBucketId = state.activeBucketId;
     state.buckets[state.activeBucketId].folded = true;
     state.activeBucketId = null;
+    return true;
+  }
+  return false;
+}
+
+/**
+ * Fold any currently active bucket smoothly and close its parent summary pill
+ */
+function foldActiveBucket() {
+  if (foldActiveBucketState()) {
+    persistCurrentThread();
     render();
   }
 }
 
 /**
- * Render the Main Learning Spine & any active Tethered Side-Panel Bucket
+ * Render Sidebar Thread List
  */
-function render(options = {}) {
-  chatStream.innerHTML = state.mainMessages
-    .map((msg, idx) => {
-      if (msg.role === 'user') {
-        return `<div class="msg-card msg-user">${escapeHtml(msg.rawText)}</div>`;
-      }
+function renderSidebarAndHeader() {
+  if (topbarTopicTitle) {
+    topbarTopicTitle.textContent = state.threadTitle || 'New Thread';
+  }
 
-      const foldedBuckets = Object.values(state.buckets).filter(
-        (b) => b.parentMessageId === msg.id && b.folded && b.items.length > 0
-      );
-
-      const isGroupExpanded = Boolean(state.expandedFoldedGroups[msg.id]);
-      const countLabel =
-        foldedBuckets.length === 1 ? '1 Clarification' : `${foldedBuckets.length} Clarifications`;
-      const previewNames = foldedBuckets.map((b) => escapeHtml(b.anchorPhrase)).join(', ');
-
-      const foldedHtml =
-        foldedBuckets.length > 0
-          ? `<div class="folded-buckets-group ${isGroupExpanded ? 'is-expanded' : ''}">
-              <button type="button" class="folded-group-toggle" data-toggle-group="${msg.id}" aria-expanded="${isGroupExpanded}">
-                <span class="folded-group-meta">
-                  <span class="folded-group-count">${countLabel}</span>
-                  <span class="folded-group-dot">·</span>
-                  <span class="folded-group-names">${previewNames}</span>
-                </span>
-                <svg class="folded-group-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
-              </button>
-              <div class="folded-group-list">
-                <div class="folded-group-list-inner">
-                  ${foldedBuckets
-                    .map(
-                      (b) => `
-                    <div class="folded-summary-item" data-bucket-id="${b.id}">
-                      <span><strong>${escapeHtml(b.anchorPhrase)}</strong> — ${escapeHtml(b.takeaway)}</span>
-                      <span class="folded-open-label">View (${b.items.length}) →</span>
-                    </div>`
-                    )
-                    .join('')}
-                </div>
-              </div>
-            </div>`
-          : '';
-
-      // Only Q&A pairs that were moved out of a bucket can be sent back to it
-      const canMoveToBucket =
-        Boolean(msg.originBucketMeta) && state.mainMessages[idx - 1]?.role === 'user';
-      const moveBackHtml = canMoveToBucket
-        ? `<div class="msg-main-actions">
-            <button type="button" class="btn btn-secondary btn-demote-bucket" data-msg-id="${msg.id}">
-              ↘ Move to Clarification Bucket
-            </button>
-          </div>`
-        : '';
+  if (!navThreadList) return;
+  const threads = loadThreadIndex();
+  navThreadList.innerHTML = threads
+    .map((t) => {
+      const isActive = state.threadId === t.id;
+      const label = t.isDemo ? `${t.title} (Demo)` : t.title;
+      const actionTitle = t.isDemo ? 'Restart demo thread' : 'Delete thread';
+      const actionIcon = t.isDemo
+        ? `<svg viewBox="0 0 24 24"><polyline points="1 4 1 10 7 10"></polyline><path d="M3.51 15a9 9 0 1 0 2.13-9.36L1 10"></path></svg>`
+        : `<svg viewBox="0 0 24 24"><polyline points="3 6 5 6 21 6"></polyline><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"></path><path d="M10 11v6"></path><path d="M14 11v6"></path></svg>`;
 
       return `
-        <article class="msg-card msg-assistant" data-msg-id="${msg.id}">
-          <div class="msg-body">
-            ${formatAssistantTextWithAnchors(msg)}
-          </div>
-          ${moveBackHtml}
-          ${foldedHtml}
-        </article>
+        <div class="nav-thread-row ${isActive ? 'active' : ''}">
+          <button type="button" class="nav-thread-item" data-thread-id="${escapeHtml(t.id)}">
+            ${escapeHtml(label)}
+          </button>
+          <button type="button" class="nav-thread-delete" data-delete-thread="${escapeHtml(t.id)}" title="${actionTitle}" aria-label="${actionTitle}">
+            ${actionIcon}
+          </button>
+        </div>
       `;
     })
     .join('');
+}
+
+/**
+ * Render Suggestion Chips ONLY when inside the Interactive Demo Thread
+ */
+function renderSuggestionChips() {
+  if (!suggestionChips) return;
+
+  if (!state.isDemo || state.mainMessages.length === 0) {
+    suggestionChips.classList.add('hidden');
+    suggestionChips.innerHTML = '';
+    return;
+  }
+
+  const available = DEMO_SUGGESTIONS.filter((p) => !state.usedPrompts.has(p));
+  if (available.length === 0) {
+    suggestionChips.classList.add('hidden');
+    suggestionChips.innerHTML = '';
+    return;
+  }
+
+  suggestionChips.classList.remove('hidden');
+  suggestionChips.innerHTML = available
+    .map(
+      (p) => `
+      <button type="button" class="try-chip" data-prompt="${escapeHtml(p)}">
+        ${escapeHtml(p)}
+      </button>`
+    )
+    .join('');
+}
+
+/**
+ * Render the Main Learning Spine (or Blank Welcome State) & any active Tethered Side-Panel Bucket
+ */
+function render(options = {}) {
+  renderSidebarAndHeader();
+  renderSuggestionChips();
+
+  const isEmptyThread = state.mainMessages.length === 0;
+  mainSpine.classList.toggle('is-empty-thread', isEmptyThread);
+
+  if (isEmptyThread) {
+    chatStream.innerHTML = `
+      <div class="empty-thread-state">
+        <h1 class="empty-state-title">Where should we begin?</h1>
+      </div>
+    `;
+  } else {
+    chatStream.innerHTML = state.mainMessages
+      .map((msg, idx) => {
+        if (msg.role === 'user') {
+          return `<div class="msg-card msg-user">${escapeHtml(msg.rawText)}</div>`;
+        }
+
+        const foldedBuckets = Object.values(state.buckets).filter(
+          (b) => b.parentMessageId === msg.id && b.folded && b.items.length > 0
+        );
+
+        const isGroupExpanded = Boolean(state.expandedFoldedGroups[msg.id]);
+        const countLabel =
+          foldedBuckets.length === 1
+            ? '1 Clarification'
+            : `${foldedBuckets.length} Clarifications`;
+        const previewNames = foldedBuckets.map((b) => escapeHtml(b.anchorPhrase)).join(', ');
+        const safeMsgId = escapeHtml(msg.id);
+
+        const foldedHtml =
+          foldedBuckets.length > 0
+            ? `<div class="folded-buckets-group ${isGroupExpanded ? 'is-expanded' : ''}">
+                <button type="button" class="folded-group-toggle" data-toggle-group="${safeMsgId}" aria-expanded="${isGroupExpanded}">
+                  <span class="folded-group-meta">
+                    <span class="folded-group-count">${countLabel}</span>
+                    <span class="folded-group-dot">·</span>
+                    <span class="folded-group-names">${previewNames}</span>
+                  </span>
+                  <svg class="folded-group-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                </button>
+                <div class="folded-group-list">
+                  <div class="folded-group-list-inner">
+                    ${foldedBuckets
+                      .map(
+                        (b) => `
+                      <div class="folded-summary-item" data-bucket-id="${escapeHtml(b.id)}">
+                        <span><strong>${escapeHtml(b.anchorPhrase)}</strong> — ${escapeHtml(b.takeaway)}</span>
+                        <span class="folded-open-label">View (${b.items.length}) →</span>
+                      </div>`
+                      )
+                      .join('')}
+                  </div>
+                </div>
+              </div>`
+            : '';
+
+        const canMoveToBucket =
+          Boolean(msg.originBucketMeta) && state.mainMessages[idx - 1]?.role === 'user';
+        const moveBackHtml = canMoveToBucket
+          ? `<div class="msg-main-actions">
+              <button type="button" class="btn btn-secondary btn-demote-bucket" data-msg-id="${safeMsgId}">
+                ↘ Move to Clarification Bucket
+              </button>
+            </div>`
+          : '';
+
+        return `
+          <article class="msg-card msg-assistant" data-msg-id="${safeMsgId}">
+            <div class="msg-body">
+              <p>${formatAssistantTextWithAnchors(msg)}</p>
+            </div>
+            ${moveBackHtml}
+            ${foldedHtml}
+          </article>
+        `;
+      })
+      .join('');
+  }
 
   // Render Side-Panel Bucket if one is open
   const activeBucket = state.activeBucketId ? state.buckets[state.activeBucketId] : null;
@@ -225,7 +404,7 @@ function render(options = {}) {
             <div class="bucket-q">${escapeHtml(item.question)}</div>
             <div class="bucket-a">${escapeHtml(item.answer)}</div>
             <div class="bucket-card-footer">
-              <button type="button" class="btn btn-secondary btn-promote-main" data-bucket-id="${activeBucket.id}" data-item-idx="${idx}">
+              <button type="button" class="btn btn-secondary btn-promote-main" data-bucket-id="${escapeHtml(activeBucket.id)}" data-item-idx="${idx}">
                 ↖ Move to Main Chat
               </button>
             </div>
@@ -236,14 +415,14 @@ function render(options = {}) {
       </div>
 
       <div class="bucket-footer">
-        <form id="bucket-form" class="bucket-form" data-bucket-id="${activeBucket.id}">
-          <input
-            type="text"
+        <form id="bucket-form" class="bucket-form" data-bucket-id="${escapeHtml(activeBucket.id)}">
+          <textarea
             id="bucket-input"
             class="bucket-input"
+            rows="1"
             placeholder="Ask a follow-up on ${escapeHtml(activeBucket.anchorPhrase)}..."
             autocomplete="off"
-          />
+          ></textarea>
           <button type="submit" class="btn btn-primary bucket-submit">Ask</button>
         </form>
       </div>
@@ -251,13 +430,16 @@ function render(options = {}) {
 
     const bucketThread = document.getElementById('bucket-thread');
     if (bucketThread) {
-      bucketThread.scrollTo({
-        top: bucketThread.scrollHeight,
-        behavior: 'smooth'
-      });
+      if (options.scrollBucketToBottom) {
+        bucketThread.scrollTo({
+          top: bucketThread.scrollHeight,
+          behavior: 'smooth'
+        });
+      } else {
+        bucketThread.scrollTop = 0;
+      }
     }
 
-    // On mobile/narrow viewports, smoothly scroll the active anchor into the top 22% peek window
     if (window.matchMedia('(max-width: 860px)').matches) {
       const activeMark = chatStream.querySelector('.concept-anchor.active-anchor');
       if (activeMark) {
@@ -272,7 +454,6 @@ function render(options = {}) {
       }
     }
   } else {
-    // Smoothly animate closed without clearing inner DOM until transition completes
     workspaceGrid.classList.remove('has-open-bucket');
     bucketPanel.setAttribute('aria-hidden', 'true');
     bucketPanel.style.transform = '';
@@ -294,18 +475,40 @@ function render(options = {}) {
       }
     });
   }
+}
 
-  // Progressive disclosure: hide used suggestion chips
-  if (suggestionChips) {
-    const chips = suggestionChips.querySelectorAll('.try-chip');
-    let visibleCount = 0;
-    chips.forEach((chip) => {
-      const isUsed = state.usedPrompts.has(chip.dataset.prompt);
-      chip.classList.toggle('hidden', isUsed);
-      if (!isUsed) visibleCount++;
-    });
-    suggestionChips.classList.toggle('hidden', visibleCount === 0);
+/**
+ * Open or append to a Clarification Bucket
+ */
+function upsertAndOpenBucket({ targetMessageId, anchorPhrase, takeaway, question, answer }) {
+  let bucket = Object.values(state.buckets).find(
+    (b) =>
+      b.parentMessageId === targetMessageId &&
+      b.anchorPhrase.toLowerCase() === anchorPhrase.toLowerCase()
+  );
+
+  if (!bucket) {
+    const id = 'bucket-' + (Object.keys(state.buckets).length + 1) + '-' + Date.now();
+    bucket = {
+      id,
+      parentMessageId: targetMessageId,
+      anchorPhrase,
+      takeaway: takeaway || `${anchorPhrase}: clarified in context.`,
+      folded: false,
+      items: [],
+      drilldownAnswer: `Concrete example for "${anchorPhrase}": Suppose p = 3 and q = 11, so n = 33 and φ(n) = (3 - 1)(11 - 1) = 20. If we pick e = 3, then d = 7 because (3 × 7) = 21, and 21 mod 20 = 1.`
+    };
+    state.buckets[id] = bucket;
+  } else if (takeaway) {
+    bucket.takeaway = takeaway;
   }
+
+  bucket.folded = false;
+  bucket.items.push({ question, answer });
+  state.activeBucketId = bucket.id;
+  state.lastBucketId = bucket.id;
+  persistCurrentThread();
+  render();
 }
 
 /**
@@ -325,7 +528,8 @@ function handleBucketFollowUp(bucketId, text) {
       `Follow-up on "${bucket.anchorPhrase}": Suppose p = 3 and q = 11, so n = 33 and φ(n) = (3 - 1)(11 - 1) = 20. If we pick e = 3, then d = 7 because (3 × 7) = 21, and 21 mod 20 = 1.`
   });
 
-  render();
+  persistCurrentThread();
+  render({ scrollBucketToBottom: true });
 }
 
 /**
@@ -334,6 +538,13 @@ function handleBucketFollowUp(bucketId, text) {
 function handlePromptSubmit(text) {
   const clean = text.trim();
   if (!clean) return;
+
+  if (!state.threadId) {
+    resetDemoThread();
+    switchToThread(DEMO_THREAD_ID);
+  }
+
+  state.usedPrompts.add(clean);
 
   const decision = classifyPromptIntent(
     clean,
@@ -344,35 +555,13 @@ function handlePromptSubmit(text) {
   );
 
   if (decision.intent === 'CLARIFICATION') {
-    let bucket = Object.values(state.buckets).find(
-      (b) =>
-        b.parentMessageId === decision.targetMessageId &&
-        b.anchorPhrase.toLowerCase() === decision.anchorPhrase.toLowerCase()
-    );
-
-    if (!bucket) {
-      const id = 'bucket-' + (Object.keys(state.buckets).length + 1);
-      bucket = {
-        id,
-        parentMessageId: decision.targetMessageId,
-        anchorPhrase: decision.anchorPhrase,
-        takeaway: decision.takeaway || `Clarified concept: ${decision.anchorPhrase}`,
-        folded: false,
-        items: [],
-        drilldownAnswer:
-          `Concrete numeric example for "${decision.anchorPhrase}": Suppose p = 3 and q = 11, so n = 33 and φ(n) = (3 - 1)(11 - 1) = 20. If we pick e = 3, then d = 7 because (3 × 7) = 21, and 21 mod 20 = 1.`
-      };
-      state.buckets[id] = bucket;
-    }
-
-    bucket.folded = false;
-    bucket.items.push({
+    upsertAndOpenBucket({
+      targetMessageId: decision.targetMessageId,
+      anchorPhrase: decision.anchorPhrase,
+      takeaway: decision.takeaway,
       question: clean,
       answer: decision.cannedAnswer
     });
-    state.activeBucketId = bucket.id;
-    state.lastBucketId = bucket.id;
-    render();
     return;
   }
 
@@ -385,29 +574,21 @@ function handlePromptSubmit(text) {
       question: clean,
       answer: decision.cannedAnswer
     });
-    render();
+    persistCurrentThread();
+    render({ scrollBucketToBottom: true });
     return;
   }
 
-  // Main Progression: Auto-fold any open bucket and continue the main lesson spine
-  if (state.activeBucketId && state.buckets[state.activeBucketId]) {
-    const parentMsgId = state.buckets[state.activeBucketId].parentMessageId;
-    if (parentMsgId) {
-      state.expandedFoldedGroups[parentMsgId] = false;
-    }
-    state.lastBucketId = state.activeBucketId;
-    state.buckets[state.activeBucketId].folded = true;
-    state.activeBucketId = null;
-  }
+  foldActiveBucketState();
 
   state.mainMessages.push({
-    id: 'msg-' + (state.mainMessages.length + 1),
+    id: nextMessageId(),
     role: 'user',
     rawText: clean
   });
 
   state.mainMessages.push({
-    id: 'msg-' + (state.mainMessages.length + 1),
+    id: nextMessageId(),
     role: 'assistant',
     rawText:
       'Now that your key pair is ready, RSA encryption and decryption are straightforward: To encrypt a message M, the sender computes ciphertext C = M^e mod n. To decrypt C back into M, the receiver uses their private key d to compute M = C^d mod n.',
@@ -423,26 +604,51 @@ function handlePromptSubmit(text) {
     ]
   });
 
+  persistCurrentThread();
   render({ scrollMainToBottom: true });
 }
 
-// Event Listeners
+function autoResizeTextarea(el) {
+  if (!el) return;
+  el.style.height = 'auto';
+  const maxHeight = 148;
+  const nextHeight = Math.min(el.scrollHeight, maxHeight);
+  el.style.height = `${nextHeight}px`;
+  el.style.overflowY = el.scrollHeight > maxHeight ? 'auto' : 'hidden';
+}
+
+function resetTextareaHeight(el) {
+  if (!el) return;
+  el.style.height = '';
+  el.style.overflowY = 'hidden';
+}
+
 promptForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const val = promptInput.value;
   promptInput.value = '';
+  resetTextareaHeight(promptInput);
   handlePromptSubmit(val);
+});
+
+promptInput.addEventListener('input', () => {
+  autoResizeTextarea(promptInput);
+});
+
+promptInput.addEventListener('keydown', (e) => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    promptForm.requestSubmit();
+  }
 });
 
 suggestionChips.addEventListener('click', (e) => {
   const btn = e.target.closest('.try-chip');
   if (!btn) return;
-  const promptText = btn.dataset.prompt;
-  state.usedPrompts.add(promptText);
-  handlePromptSubmit(promptText);
+  e.stopPropagation();
+  handlePromptSubmit(btn.dataset.prompt);
 });
 
-// Sidebar open/close & "+ New Thread" logic
 function toggleSidebar(forceOpen) {
   const isOpen =
     typeof forceOpen === 'boolean'
@@ -468,20 +674,37 @@ if (sidebarBackdrop) {
 
 if (btnNewChat) {
   btnNewChat.addEventListener('click', () => {
-    state.activeBucketId = null;
-    state.lastBucketId = null;
-    state.expandedFoldedGroups = {};
-    state.usedPrompts.clear();
-    state.pendingSelection = null;
-    state.buckets = {};
-    state.mainMessages = structuredClone(INITIAL_MESSAGES);
-    if (selectionClarifyBtn) selectionClarifyBtn.classList.add('hidden');
     toggleSidebar(false);
-    render();
+    switchToThread(null);
   });
 }
 
-// Floating Text-Selection "Clarify ↗" Pill logic
+if (navThreadList) {
+  navThreadList.addEventListener('click', (e) => {
+    const deleteBtn = e.target.closest('[data-delete-thread]');
+    if (deleteBtn) {
+      e.stopPropagation();
+      const targetId = deleteBtn.getAttribute('data-delete-thread');
+      deleteThreadData(targetId);
+      if (targetId === DEMO_THREAD_ID && state.threadId === DEMO_THREAD_ID) {
+        switchToThread(DEMO_THREAD_ID);
+      } else if (state.threadId === targetId) {
+        switchToThread(null);
+      } else {
+        renderSidebarAndHeader();
+      }
+      return;
+    }
+
+    const threadBtn = e.target.closest('[data-thread-id]');
+    if (threadBtn) {
+      const targetId = threadBtn.getAttribute('data-thread-id');
+      toggleSidebar(false);
+      switchToThread(targetId);
+    }
+  });
+}
+
 function hideSelectionPill() {
   state.pendingSelection = null;
   if (selectionClarifyBtn) {
@@ -489,57 +712,62 @@ function hideSelectionPill() {
   }
 }
 
+let selectionRafId = 0;
+
 document.addEventListener('selectionchange', () => {
   if (!selectionClarifyBtn) return;
-  const sel = window.getSelection();
-  if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
-    hideSelectionPill();
-    return;
-  }
+  if (selectionRafId) cancelAnimationFrame(selectionRafId);
 
-  const text = sel.toString().trim();
-  if (text.length < 3 || text.length > 90) {
-    hideSelectionPill();
-    return;
-  }
+  selectionRafId = requestAnimationFrame(() => {
+    selectionRafId = 0;
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0) {
+      hideSelectionPill();
+      return;
+    }
 
-  const range = sel.getRangeAt(0);
-  const startContainer =
-    range.commonAncestorContainer.nodeType === 1
-      ? range.commonAncestorContainer
-      : range.commonAncestorContainer.parentElement;
+    const text = sel.toString().trim();
+    if (text.length < 3 || text.length > 90) {
+      hideSelectionPill();
+      return;
+    }
 
-  const assistantCard = startContainer?.closest('.msg-assistant');
-  // Only show when selecting inside the main lesson body (not inside folded bars or buttons)
-  if (
-    !assistantCard ||
-    startContainer.closest('.folded-buckets-group') ||
-    startContainer.closest('.msg-main-actions')
-  ) {
-    hideSelectionPill();
-    return;
-  }
+    const range = sel.getRangeAt(0);
+    const startContainer =
+      range.commonAncestorContainer.nodeType === 1
+        ? range.commonAncestorContainer
+        : range.commonAncestorContainer.parentElement;
 
-  const rect = range.getBoundingClientRect();
-  if (rect.width === 0 && rect.height === 0) {
-    hideSelectionPill();
-    return;
-  }
+    const assistantCard = startContainer?.closest('.msg-assistant');
+    if (
+      !assistantCard ||
+      startContainer.closest('.folded-buckets-group') ||
+      startContainer.closest('.msg-main-actions')
+    ) {
+      hideSelectionPill();
+      return;
+    }
 
-  const msgId = assistantCard.getAttribute('data-msg-id');
-  state.pendingSelection = { msgId, text };
+    const rect = range.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+      hideSelectionPill();
+      return;
+    }
 
-  const top = Math.max(44, rect.top - 8);
-  const left = Math.min(window.innerWidth - 60, Math.max(60, rect.left + rect.width / 2));
+    const msgId = assistantCard.getAttribute('data-msg-id');
+    state.pendingSelection = { msgId, text };
 
-  selectionClarifyBtn.style.top = `${top}px`;
-  selectionClarifyBtn.style.left = `${left}px`;
-  selectionClarifyBtn.classList.remove('hidden');
+    const top = Math.max(44, rect.top - 8);
+    const left = Math.min(window.innerWidth - 60, Math.max(60, rect.left + rect.width / 2));
+
+    selectionClarifyBtn.style.top = `${top}px`;
+    selectionClarifyBtn.style.left = `${left}px`;
+    selectionClarifyBtn.classList.remove('hidden');
+  });
 });
 
 if (selectionClarifyBtn) {
   selectionClarifyBtn.addEventListener('mousedown', (e) => {
-    // Prevent mousedown from collapsing the text selection before click fires
     e.preventDefault();
     e.stopPropagation();
   });
@@ -552,7 +780,9 @@ if (selectionClarifyBtn) {
     const msg = state.mainMessages.find((m) => m.id === pending.msgId);
     if (!msg) return;
 
-    // Check if the selected text overlaps one of the message's pre-defined concepts
+    window.getSelection()?.removeAllRanges();
+    hideSelectionPill();
+
     const lowerSel = pending.text.toLowerCase();
     const matchedConcept = (msg.concepts || []).find(
       (c) =>
@@ -570,39 +800,16 @@ if (selectionClarifyBtn) {
       ? matchedConcept.takeaway
       : `${anchorPhrase}: key concept clarified in context.`;
 
-    let bucket = Object.values(state.buckets).find(
-      (b) =>
-        b.parentMessageId === msg.id &&
-        b.anchorPhrase.toLowerCase() === anchorPhrase.toLowerCase()
-    );
-
-    if (!bucket) {
-      const id = 'bucket-' + (Object.keys(state.buckets).length + 1);
-      bucket = {
-        id,
-        parentMessageId: msg.id,
-        anchorPhrase,
-        takeaway,
-        folded: false,
-        items: [],
-        drilldownAnswer:
-          `Concrete numeric example for "${anchorPhrase}": Suppose p = 3 and q = 11, so n = 33 and φ(n) = (3 - 1)(11 - 1) = 20. If we pick e = 3, then d = 7 because (3 × 7) = 21, and 21 mod 20 = 1.`
-      };
-      state.buckets[id] = bucket;
-    }
-
-    bucket.folded = false;
-    bucket.items.push({ question, answer });
-    state.activeBucketId = bucket.id;
-    state.lastBucketId = bucket.id;
-
-    window.getSelection()?.removeAllRanges();
-    hideSelectionPill();
-    render();
+    upsertAndOpenBucket({
+      targetMessageId: msg.id,
+      anchorPhrase,
+      takeaway,
+      question,
+      answer
+    });
   });
 }
 
-// Delegated submit listener for the dedicated Bucket follow-up form
 document.addEventListener('submit', (e) => {
   const bForm = e.target.closest('#bucket-form');
   if (!bForm) return;
@@ -611,34 +818,44 @@ document.addEventListener('submit', (e) => {
   if (!bInput) return;
   const val = bInput.value;
   bInput.value = '';
+  resetTextareaHeight(bInput);
   handleBucketFollowUp(bForm.dataset.bucketId, val);
 });
 
-// Click on the Main Scroll canvas (outside the prompt dock) to smoothly close the open bucket
+document.addEventListener('input', (e) => {
+  const bInput = e.target.closest('#bucket-input');
+  if (bInput) {
+    autoResizeTextarea(bInput);
+  }
+});
+
+document.addEventListener('keydown', (e) => {
+  const bInput = e.target.closest('#bucket-input');
+  if (bInput && e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    const bForm = bInput.closest('#bucket-form');
+    if (bForm) bForm.requestSubmit();
+  }
+});
+
 mainSpine.addEventListener('click', (e) => {
   if (!state.activeBucketId) return;
-
-  // Never close when clicking inside the bottom prompt dock (input, submit button, or suggestion chips)
+  if (!mainSpine.contains(e.target)) return;
   if (e.target.closest('.prompt-dock')) return;
-
-  // Don't close if the user is clicking an anchor highlight, folded summary, or group toggle
   if (e.target.closest('[data-bucket-id]') || e.target.closest('[data-toggle-group]')) return;
 
-  // Don't close if the user just dragged to select text
   const selection = window.getSelection();
   if (selection && selection.toString().trim().length > 0) return;
 
   foldActiveBucket();
 });
 
-// Keyboard Escape hatch
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && state.activeBucketId) {
     foldActiveBucket();
   }
 });
 
-// Mobile Bottom Sheet Drag-Down-to-Close Gesture
 let sheetDragState = null;
 
 bucketPanel.addEventListener(
@@ -653,7 +870,6 @@ bucketPanel.addEventListener(
     const bucketThread = document.getElementById('bucket-thread');
     const atTopOfThread = bucketThread ? bucketThread.scrollTop <= 0 : true;
 
-    // Allow dragging from the grab bar/header, or pulling down when bucket thread is scrolled to top
     if (!fromHeader && !atTopOfThread) return;
 
     sheetDragState = {
@@ -672,7 +888,6 @@ bucketPanel.addEventListener(
     if (!sheetDragState) return;
     const deltaY = e.touches[0].clientY - sheetDragState.startY;
 
-    // Only engage drag when pulling downward
     if (deltaY <= 0) {
       if (sheetDragState.isDragging) {
         bucketPanel.style.transform = 'translateY(0)';
@@ -715,7 +930,6 @@ bucketPanel.addEventListener('touchend', finishSheetDrag);
 bucketPanel.addEventListener('touchcancel', finishSheetDrag);
 
 document.addEventListener('click', (e) => {
-  // Toggle collapsible "N Clarifications" group under a message
   const groupToggle = e.target.closest('[data-toggle-group]');
   if (groupToggle) {
     const msgId = groupToggle.getAttribute('data-toggle-group');
@@ -724,30 +938,27 @@ document.addEventListener('click', (e) => {
     return;
   }
 
-  // Close Bucket button or mobile sheet grab handle
   if (e.target.closest('#btn-fold-bucket') || e.target.closest('#sheet-grab-bar')) {
     foldActiveBucket();
     return;
   }
 
-  // Click highlighted anchor or folded summary to open/switch bucket
   const anchorEl = e.target.closest('[data-bucket-id]');
   if (anchorEl && !e.target.closest('.btn-promote-main') && !e.target.closest('#bucket-form')) {
     const bId = anchorEl.getAttribute('data-bucket-id');
     if (state.buckets[bId]) {
-      // Toggle closed if clicking the already-active anchor phrase
       if (state.activeBucketId === bId && !state.buckets[bId].folded) {
         foldActiveBucket();
       } else {
         state.buckets[bId].folded = false;
         state.activeBucketId = bId;
+        persistCurrentThread();
         render();
       }
     }
     return;
   }
 
-  // Promote bucket item back to Main Chat ("Move to Main Chat")
   const promoteBtn = e.target.closest('.btn-promote-main');
   if (promoteBtn) {
     const bId = promoteBtn.getAttribute('data-bucket-id');
@@ -762,25 +973,23 @@ document.addEventListener('click', (e) => {
         takeaway: bucket.takeaway,
         drilldownAnswer: bucket.drilldownAnswer
       };
-      state.mainMessages.push(
-        { id: 'msg-' + Date.now() + '-u', role: 'user', rawText: removed.question },
-        {
-          id: 'msg-' + Date.now() + '-a',
-          role: 'assistant',
-          rawText: removed.answer,
-          originBucketMeta: bucketMeta
-        }
-      );
+      state.mainMessages.push({ id: nextMessageId(), role: 'user', rawText: removed.question });
+      state.mainMessages.push({
+        id: nextMessageId(),
+        role: 'assistant',
+        rawText: removed.answer,
+        originBucketMeta: bucketMeta
+      });
       if (bucket.items.length === 0) {
         delete state.buckets[bId];
         state.activeBucketId = null;
       }
+      persistCurrentThread();
       render({ scrollMainToBottom: true });
     }
     return;
   }
 
-  // Move a Main Chat Q&A pair back into a Clarification Bucket ("↘ Move to Clarification Bucket")
   const demoteBtn = e.target.closest('.btn-demote-bucket');
   if (demoteBtn) {
     const msgId = demoteBtn.getAttribute('data-msg-id');
@@ -788,58 +997,19 @@ document.addEventListener('click', (e) => {
     if (aIdx > 0 && state.mainMessages[aIdx - 1]?.role === 'user') {
       const userMsg = state.mainMessages[aIdx - 1];
       const assistantMsg = state.mainMessages[aIdx];
+      if (!assistantMsg.originBucketMeta) return;
 
-      // Find the preceding assistant message to anchor to if needed
-      const prevAssistant = [...state.mainMessages.slice(0, aIdx - 1)]
-        .reverse()
-        .find((m) => m.role === 'assistant');
-
-      // Remove the user + assistant pair from mainMessages
       state.mainMessages.splice(aIdx - 1, 2);
 
-      let targetBucket = null;
-
-      if (assistantMsg.originBucketMeta) {
-        const meta = assistantMsg.originBucketMeta;
-        if (!state.buckets[meta.id]) {
-          state.buckets[meta.id] = {
-            ...meta,
-            folded: false,
-            items: []
-          };
-        }
-        targetBucket = state.buckets[meta.id];
-      } else {
-        // User manually moved a main-thread Q&A into a bucket
-        const parentId = prevAssistant ? prevAssistant.id : state.mainMessages[1]?.id;
-        const parentText = (prevAssistant || state.mainMessages[1])?.rawText || '';
-        const words = userMsg.rawText
-          .replace(/[^a-zA-Z0-9\s]/g, '')
-          .split(/\s+/)
-          .filter((w) => w.length > 3);
-        const matchedWord = words.find((w) =>
-          parentText.toLowerCase().includes(w.toLowerCase())
-        );
-
-        let anchorPhrase = userMsg.rawText;
-        if (matchedWord) {
-          const regex = new RegExp(`(\\b\\w+\\s+)?\\b\\w*${matchedWord}\\w*\\b(\\s+\\w+\\b)?`, 'i');
-          const match = parentText.match(regex);
-          if (match) anchorPhrase = match[0].trim();
-        }
-
-        const newId = 'bucket-' + (Object.keys(state.buckets).length + 1);
-        targetBucket = {
-          id: newId,
-          parentMessageId: parentId,
-          anchorPhrase,
-          takeaway: assistantMsg.rawText.split(/(?<=[.!?])\s+/)[0] || assistantMsg.rawText,
+      const meta = assistantMsg.originBucketMeta;
+      if (!state.buckets[meta.id]) {
+        state.buckets[meta.id] = {
+          ...meta,
           folded: false,
           items: []
         };
-        state.buckets[newId] = targetBucket;
       }
-
+      const targetBucket = state.buckets[meta.id];
       targetBucket.folded = false;
       targetBucket.items.push({
         question: userMsg.rawText,
@@ -847,9 +1017,15 @@ document.addEventListener('click', (e) => {
       });
       state.activeBucketId = targetBucket.id;
       state.lastBucketId = targetBucket.id;
+      persistCurrentThread();
       render();
     }
   }
 });
 
-render();
+loadThreadIndex();
+switchToThread(getUrlThreadId(), { fromPopState: true });
+
+window.addEventListener('popstate', () => {
+  switchToThread(getUrlThreadId(), { fromPopState: true });
+});
