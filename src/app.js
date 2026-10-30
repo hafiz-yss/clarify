@@ -3,8 +3,9 @@
  *
  * Combines:
  *  1. Blank New-Thread state & persistent multi-thread notebook (`src/storage.js`)
- *  2. Interactive RSA Demo Thread (`src/router.js`) that runs locally & deterministically
- *  3. Full-height 50/50 desktop workbench & iOS mobile bottom sheet with drag-to-dismiss
+ *  2. Live Semantic Pedagogical Router (`src/ai.js`) with context-window pruning & live key verification
+ *  3. Interactive RSA Demo Thread (`src/router.js`) that always runs locally & deterministically
+ *  4. Full-height 50/50 desktop workbench & iOS mobile bottom sheet with drag-to-dismiss
  */
 
 import { classifyPromptIntent } from './router.js';
@@ -16,8 +17,16 @@ import {
   loadThreadData,
   saveThreadData,
   deleteThreadData,
-  resetDemoThread
+  resetDemoThread,
+  loadAIConfig,
+  saveAIConfig
 } from './storage.js';
+import {
+  analyzeAndRespondWithAI,
+  deriveFallbackTitle,
+  resolveVerbatimAnchor,
+  verifyApiKey
+} from './ai.js';
 
 export const state = {
   threadId: null, // null = Blank New Thread view
@@ -28,8 +37,13 @@ export const state = {
   expandedFoldedGroups: {},
   usedPrompts: new Set(),
   pendingSelection: null,
+  pendingPrompt: null,
+  isLoading: false,
+  loadingTarget: null, // 'main' | 'bucket' | null
+  errorBanner: null,
   buckets: {},
-  mainMessages: []
+  mainMessages: [],
+  aiConfig: loadAIConfig()
 };
 
 const workspaceGrid = document.getElementById('workspace-grid');
@@ -49,6 +63,22 @@ const sidebarBackdrop = document.getElementById('sidebar-backdrop');
 const btnNewChat = document.getElementById('btn-new-chat');
 const selectionClarifyBtn = document.getElementById('selection-clarify-btn');
 
+// API Settings Modal Elements
+const btnOpenAiSettings = document.getElementById('btn-open-ai-settings');
+const navModeDot = document.getElementById('nav-mode-dot');
+const navModeLabel = document.getElementById('nav-mode-label');
+const aiSettingsModal = document.getElementById('ai-settings-modal');
+const btnCloseAiSettings = document.getElementById('btn-close-ai-settings');
+const settingsDisconnectedHeader = document.getElementById('settings-disconnected-header');
+const aiConnectedView = document.getElementById('ai-connected-view');
+const aiKeyField = document.getElementById('ai-key-field');
+const aiSettingsForm = document.getElementById('ai-settings-form');
+const aiApiKeyInput = document.getElementById('ai-api-key-input');
+const aiSettingsFeedback = document.getElementById('ai-settings-feedback');
+const btnSaveApiKey = document.getElementById('btn-save-api-key');
+const btnClearApiKey = document.getElementById('btn-clear-api-key');
+const btnModalTryDemo = document.getElementById('btn-modal-try-demo');
+
 function escapeHtml(str) {
   return String(str ?? '')
     .replace(/\u0000/g, '')
@@ -60,7 +90,7 @@ function escapeHtml(str) {
 }
 
 /**
- * Generate a strictly unique, sequential message ID (msg-1, msg-2, ...)
+ * Generate a strictly unique, sequential message ID (msg-1, msg-2, ...) even after promoting/demoting items
  */
 function nextMessageId() {
   let maxNum = 0;
@@ -140,6 +170,9 @@ function persistCurrentThread() {
 function switchToThread(threadId, { fromPopState = false } = {}) {
   state.pendingSelection = null;
   state.expandedFoldedGroups = {};
+  state.isLoading = false;
+  state.loadingTarget = null;
+  state.errorBanner = null;
   if (selectionClarifyBtn) selectionClarifyBtn.classList.add('hidden');
 
   if (!threadId) {
@@ -176,28 +209,141 @@ function switchToThread(threadId, { fromPopState = false } = {}) {
 }
 
 /**
- * Highlight anchored phrases inside an assistant message's text
+ * Format inline markdown (bold **, italic *, inline `code`) and math notation (exponents x^2, M^e, 2^{n-1} and subscripts x_1)
  */
-function formatAssistantTextWithAnchors(msg) {
-  let html = escapeHtml(msg.rawText);
+function formatInlineRichText(text, alreadyEscaped = false) {
+  let html = alreadyEscaped ? String(text ?? '') : escapeHtml(text);
 
-  const msgBuckets = Object.values(state.buckets).filter((b) => b.parentMessageId === msg.id);
+  // 1. Protect inline code (`...`) first so math/bold inside backticks isn't altered
+  const codeTokens = [];
+  html = html.replace(/`([^`\n]+)`/g, (_, code) => {
+    const token = `\u0000CODE_${codeTokens.length}\u0000`;
+    codeTokens.push(`<code class="inline-code">${code}</code>`);
+    return token;
+  });
 
-  for (const bucket of msgBuckets) {
-    const safePhrase = escapeHtml(bucket.anchorPhrase);
-    const isActive = state.activeBucketId === bucket.id && !bucket.folded;
-    const count = bucket.items.length;
-    const safeBucketId = escapeHtml(bucket.id);
+  // 2. Bold (**text**) and Italic (*text*)
+  html = html.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+  html = html.replace(/(?<!\*)\*([^*\n]+)\*(?!\*)/g, '<em>$1</em>');
 
-    const replacement = `<mark class="concept-anchor ${isActive ? 'active-anchor' : ''}" data-bucket-id="${safeBucketId}">${safePhrase}<span class="bucket-pill-badge" data-bucket-id="${safeBucketId}">${count}</span></mark>`;
+  // 3. Exponents: x^{n-1}, x^(2k), x^2, M^e, C^d, 10^-3
+  html = html.replace(/([A-Za-z0-9)\]])\^\{([^}\n]+)\}/g, '$1<sup>$2</sup>');
+  html = html.replace(/([A-Za-z0-9)\]])\^\(([^)\n]+)\)/g, '$1<sup>($2)</sup>');
+  html = html.replace(/([A-Za-z0-9)\]])\^([+-]?[A-Za-z0-9]+)/g, '$1<sup>$2</sup>');
 
-    const regex = new RegExp(safePhrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
-    html = html.replace(regex, () => replacement);
-  }
+  // 4. Subscripts: x_{i+1}, x_1, p_2
+  html = html.replace(/([A-Za-z0-9)\]])_\{([^}\n]+)\}/g, '$1<sub>$2</sub>');
+  html = html.replace(/\b([A-Za-z])_([0-9]+)\b/g, '$1<sub>$2</sub>');
+
+  // 5. Restore inline code tokens using a replacer function so $-patterns in code are never interpreted
+  codeTokens.forEach((replacement, idx) => {
+    html = html.replace(`\u0000CODE_${idx}\u0000`, () => replacement);
+  });
 
   return html;
 }
 
+/**
+ * Format block-level markdown (paragraphs, headings, lists, code blocks) while preserving anchored phrases
+ */
+function formatRichBlocks(rawText, msgBuckets = []) {
+  let workingText = escapeHtml(rawText || '');
+
+  // Sort anchored phrases longest-first so overlapping substrings never steal part of a longer phrase
+  const sortedBuckets = [...msgBuckets].sort(
+    (a, b) => (b.anchorPhrase?.length || 0) - (a.anchorPhrase?.length || 0)
+  );
+
+  // Protect and format any anchored phrases before applying block/inline markdown
+  const anchorTokens = [];
+  for (const bucket of sortedBuckets) {
+    const safePhrase = escapeHtml(bucket.anchorPhrase);
+    if (!safePhrase) continue;
+    const isActive = state.activeBucketId === bucket.id && !bucket.folded;
+    const count = bucket.items.length;
+    const safeBucketId = escapeHtml(bucket.id);
+
+    const escapedRegexStr = safePhrase.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Match the phrase even if the model wrapped it in **bold**
+    const regex = new RegExp(`(?:\\*\\*)?(${escapedRegexStr})(?:\\*\\*)?`, 'i');
+    if (regex.test(workingText)) {
+      const token = `\u0000ANCHOR_${anchorTokens.length}\u0000`;
+      const formattedPhrase = formatInlineRichText(safePhrase, true);
+      anchorTokens.push(
+        `<mark class="concept-anchor ${isActive ? 'active-anchor' : ''}" data-bucket-id="${safeBucketId}">${formattedPhrase}<span class="bucket-pill-badge" data-bucket-id="${safeBucketId}">${count}</span></mark>`
+      );
+      workingText = workingText.replace(regex, () => token);
+    }
+  }
+
+  // Extract fenced code blocks ```...```
+  const blockCodeTokens = [];
+  workingText = workingText.replace(/```(?:[a-zA-Z0-9_-]+)?\n([\s\S]*?)```/g, (_, code) => {
+    const token = `\u0000BLOCKCODE_${blockCodeTokens.length}\u0000`;
+    blockCodeTokens.push(`<pre class="msg-code-block"><code>${code.trim()}</code></pre>`);
+    return token;
+  });
+
+  const blocks = workingText.split(/\n{2,}/).filter((b) => b.trim().length > 0);
+
+  let rendered = blocks
+    .map((block) => {
+      const trimmed = block.trim();
+      if (/^\u0000BLOCKCODE_\d+\u0000$/.test(trimmed)) {
+        return trimmed;
+      }
+
+      const lines = trimmed.split('\n');
+
+      // Heading block (e.g. ### Heading)
+      if (lines.length === 1 && /^#{1,4}\s+/.test(lines[0])) {
+        const headingText = lines[0].replace(/^#{1,4}\s+/, '');
+        return `<h3 class="msg-heading">${formatInlineRichText(headingText, true)}</h3>`;
+      }
+
+      // Unordered list block (- item or * item)
+      if (lines.every((l) => /^\s*[-*•]\s+/.test(l))) {
+        const items = lines
+          .map((l) => `<li>${formatInlineRichText(l.replace(/^\s*[-*•]\s+/, ''), true)}</li>`)
+          .join('');
+        return `<ul class="msg-list">${items}</ul>`;
+      }
+
+      // Ordered list block (1. item)
+      if (lines.every((l) => /^\s*\d+\.\s+/.test(l))) {
+        const items = lines
+          .map((l) => `<li>${formatInlineRichText(l.replace(/^\s*\d+\.\s+/, ''), true)}</li>`)
+          .join('');
+        return `<ol class="msg-list">${items}</ol>`;
+      }
+
+      const formattedLines = lines.map((l) => formatInlineRichText(l, true)).join('<br />');
+      return `<p>${formattedLines}</p>`;
+    })
+    .join('');
+
+  blockCodeTokens.forEach((replacement, idx) => {
+    rendered = rendered.replace(`\u0000BLOCKCODE_${idx}\u0000`, () => replacement);
+  });
+
+  anchorTokens.forEach((replacement, idx) => {
+    rendered = rendered.replace(`\u0000ANCHOR_${idx}\u0000`, () => replacement);
+  });
+
+  return rendered;
+}
+
+/**
+ * Highlight anchored phrases inside an assistant message's text
+ */
+function formatAssistantTextWithAnchors(msg) {
+  const msgBuckets = Object.values(state.buckets).filter((b) => b.parentMessageId === msg.id);
+  return formatRichBlocks(msg.rawText, msgBuckets);
+}
+
+/**
+ * Fold active bucket state without triggering a render (reused before progression updates)
+ */
 function foldActiveBucketState() {
   if (state.activeBucketId && state.buckets[state.activeBucketId]) {
     const parentMsgId = state.buckets[state.activeBucketId].parentMessageId;
@@ -223,11 +369,19 @@ function foldActiveBucket() {
 }
 
 /**
- * Render Sidebar Thread List
+ * Render Sidebar Thread List & AI Connection Status
  */
 function renderSidebarAndHeader() {
   if (topbarTopicTitle) {
     topbarTopicTitle.textContent = state.threadTitle || 'New Thread';
+  }
+
+  const hasLiveKey = Boolean(state.aiConfig.apiKey);
+  if (navModeDot) {
+    navModeDot.classList.toggle('is-live', hasLiveKey);
+  }
+  if (navModeLabel) {
+    navModeLabel.textContent = hasLiveKey ? 'API Key Connected' : 'Connect API Key';
   }
 
   if (!navThreadList) return;
@@ -292,82 +446,109 @@ function render(options = {}) {
   renderSidebarAndHeader();
   renderSuggestionChips();
 
+  const errorHtml = state.errorBanner
+    ? `<div class="chat-error-banner" role="alert">
+        <span>${escapeHtml(state.errorBanner)}</span>
+        <button type="button" class="btn btn-secondary" id="btn-error-open-key">
+          API Settings
+        </button>
+      </div>`
+    : '';
+
   const isEmptyThread = state.mainMessages.length === 0;
   mainSpine.classList.toggle('is-empty-thread', isEmptyThread);
 
   if (isEmptyThread) {
     chatStream.innerHTML = `
+      ${errorHtml}
       <div class="empty-thread-state">
         <h1 class="empty-state-title">Where should we begin?</h1>
       </div>
+      ${
+        state.isLoading
+          ? `<div class="thinking-indicator"><span class="thinking-dot"></span><span>Thinking...</span></div>`
+          : ''
+      }
     `;
   } else {
-    chatStream.innerHTML = state.mainMessages
-      .map((msg, idx) => {
-        if (msg.role === 'user') {
-          return `<div class="msg-card msg-user">${escapeHtml(msg.rawText)}</div>`;
-        }
+    chatStream.innerHTML =
+      state.mainMessages
+        .map((msg, idx) => {
+          if (msg.role === 'user') {
+            return `<div class="msg-card msg-user">${formatInlineRichText(msg.rawText)}</div>`;
+          }
 
-        const foldedBuckets = Object.values(state.buckets).filter(
-          (b) => b.parentMessageId === msg.id && b.folded && b.items.length > 0
-        );
+          const foldedBuckets = Object.values(state.buckets).filter(
+            (b) => b.parentMessageId === msg.id && b.folded && b.items.length > 0
+          );
 
-        const isGroupExpanded = Boolean(state.expandedFoldedGroups[msg.id]);
-        const countLabel =
-          foldedBuckets.length === 1
-            ? '1 Clarification'
-            : `${foldedBuckets.length} Clarifications`;
-        const previewNames = foldedBuckets.map((b) => escapeHtml(b.anchorPhrase)).join(', ');
-        const safeMsgId = escapeHtml(msg.id);
+          const isGroupExpanded = Boolean(state.expandedFoldedGroups[msg.id]);
+          const countLabel =
+            foldedBuckets.length === 1
+              ? '1 Clarification'
+              : `${foldedBuckets.length} Clarifications`;
+          const previewNames = foldedBuckets
+            .map((b) => formatInlineRichText(b.anchorPhrase))
+            .join(', ');
 
-        const foldedHtml =
-          foldedBuckets.length > 0
-            ? `<div class="folded-buckets-group ${isGroupExpanded ? 'is-expanded' : ''}">
-                <button type="button" class="folded-group-toggle" data-toggle-group="${safeMsgId}" aria-expanded="${isGroupExpanded}">
-                  <span class="folded-group-meta">
-                    <span class="folded-group-count">${countLabel}</span>
-                    <span class="folded-group-dot">·</span>
-                    <span class="folded-group-names">${previewNames}</span>
-                  </span>
-                  <svg class="folded-group-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
-                </button>
-                <div class="folded-group-list">
-                  <div class="folded-group-list-inner">
-                    ${foldedBuckets
-                      .map(
-                        (b) => `
-                      <div class="folded-summary-item" data-bucket-id="${escapeHtml(b.id)}">
-                        <span><strong>${escapeHtml(b.anchorPhrase)}</strong> — ${escapeHtml(b.takeaway)}</span>
-                        <span class="folded-open-label">View (${b.items.length}) →</span>
-                      </div>`
-                      )
-                      .join('')}
+          const safeMsgId = escapeHtml(msg.id);
+          const foldedHtml =
+            foldedBuckets.length > 0
+              ? `<div class="folded-buckets-group ${isGroupExpanded ? 'is-expanded' : ''}">
+                  <button type="button" class="folded-group-toggle" data-toggle-group="${safeMsgId}" aria-expanded="${isGroupExpanded}">
+                    <span class="folded-group-meta">
+                      <span class="folded-group-count">${countLabel}</span>
+                      <span class="folded-group-dot">·</span>
+                      <span class="folded-group-names">${previewNames}</span>
+                    </span>
+                    <svg class="folded-group-chevron" viewBox="0 0 24 24"><polyline points="6 9 12 15 18 9"></polyline></svg>
+                  </button>
+                  <div class="folded-group-list">
+                    <div class="folded-group-list-inner">
+                      ${foldedBuckets
+                        .map(
+                          (b) => `
+                        <div class="folded-summary-item" data-bucket-id="${escapeHtml(b.id)}">
+                          <span><strong>${formatInlineRichText(b.anchorPhrase)}</strong> — ${formatInlineRichText(b.takeaway)}</span>
+                          <span class="folded-open-label">View (${b.items.length}) →</span>
+                        </div>`
+                        )
+                        .join('')}
+                    </div>
                   </div>
-                </div>
+                </div>`
+              : '';
+
+          const canMoveToBucket =
+            Boolean(msg.originBucketMeta) && state.mainMessages[idx - 1]?.role === 'user';
+          const moveBackHtml = canMoveToBucket
+            ? `<div class="msg-main-actions">
+                <button type="button" class="btn btn-secondary btn-demote-bucket" data-msg-id="${safeMsgId}">
+                  ↘ Move to Clarification Bucket
+                </button>
               </div>`
             : '';
 
-        const canMoveToBucket =
-          Boolean(msg.originBucketMeta) && state.mainMessages[idx - 1]?.role === 'user';
-        const moveBackHtml = canMoveToBucket
-          ? `<div class="msg-main-actions">
-              <button type="button" class="btn btn-secondary btn-demote-bucket" data-msg-id="${safeMsgId}">
-                ↘ Move to Clarification Bucket
-              </button>
-            </div>`
-          : '';
+          return `
+            <article class="msg-card msg-assistant" data-msg-id="${safeMsgId}">
+              <div class="msg-body">
+                ${formatAssistantTextWithAnchors(msg)}
+              </div>
+              ${moveBackHtml}
+              ${foldedHtml}
+            </article>
+          `;
+        })
+        .join('') +
+      errorHtml +
+      (state.isLoading && state.loadingTarget !== 'bucket'
+        ? `<div class="thinking-indicator"><span class="thinking-dot"></span><span>Thinking...</span></div>`
+        : '');
+  }
 
-        return `
-          <article class="msg-card msg-assistant" data-msg-id="${safeMsgId}">
-            <div class="msg-body">
-              <p>${formatAssistantTextWithAnchors(msg)}</p>
-            </div>
-            ${moveBackHtml}
-            ${foldedHtml}
-          </article>
-        `;
-      })
-      .join('');
+  const promptSubmitBtn = promptForm?.querySelector('.prompt-submit');
+  if (promptSubmitBtn) {
+    promptSubmitBtn.disabled = state.isLoading;
   }
 
   // Render Side-Panel Bucket if one is open
@@ -394,15 +575,15 @@ function render(options = {}) {
       <div class="bucket-thread" id="bucket-thread">
         <div class="bucket-summary-bubble">
           <span class="bucket-summary-label">Summary</span>
-          <p>${escapeHtml(activeBucket.takeaway)}</p>
+          <p>${formatInlineRichText(activeBucket.takeaway)}</p>
         </div>
 
         ${activeBucket.items
           .map(
             (item, idx) => `
           <div class="bucket-qa-card">
-            <div class="bucket-q">${escapeHtml(item.question)}</div>
-            <div class="bucket-a">${escapeHtml(item.answer)}</div>
+            <div class="bucket-q">${formatInlineRichText(item.question)}</div>
+            <div class="bucket-a">${formatRichBlocks(item.answer)}</div>
             <div class="bucket-card-footer">
               <button type="button" class="btn btn-secondary btn-promote-main" data-bucket-id="${escapeHtml(activeBucket.id)}" data-item-idx="${idx}">
                 ↖ Move to Main Chat
@@ -412,6 +593,11 @@ function render(options = {}) {
         `
           )
           .join('')}
+        ${
+          state.isLoading && state.loadingTarget === 'bucket'
+            ? `<div class="thinking-indicator"><span class="thinking-dot"></span><span>Thinking...</span></div>`
+            : ''
+        }
       </div>
 
       <div class="bucket-footer">
@@ -423,7 +609,7 @@ function render(options = {}) {
             placeholder="Ask a follow-up on ${escapeHtml(activeBucket.anchorPhrase)}..."
             autocomplete="off"
           ></textarea>
-          <button type="submit" class="btn btn-primary bucket-submit">Ask</button>
+          <button type="submit" class="btn btn-primary bucket-submit" ${state.isLoading ? 'disabled' : ''}>Ask</button>
         </form>
       </div>
     `;
@@ -514,12 +700,45 @@ function upsertAndOpenBucket({ targetMessageId, anchorPhrase, takeaway, question
 /**
  * Handle submitting a follow-up question directly inside the open Bucket's input bar
  */
-function handleBucketFollowUp(bucketId, text) {
+async function handleBucketFollowUp(bucketId, text) {
   const clean = text.trim();
-  if (!clean) return;
+  if (!clean || state.isLoading) return;
 
   const bucket = state.buckets[bucketId];
   if (!bucket) return;
+
+  state.errorBanner = null;
+
+  // Only call live AI if this is NOT the hardcoded Demo Thread
+  if (!state.isDemo && state.aiConfig.apiKey) {
+    try {
+      state.isLoading = true;
+      state.loadingTarget = 'bucket';
+      render({ scrollBucketToBottom: true });
+      const aiRes = await analyzeAndRespondWithAI({
+        apiKey: state.aiConfig.apiKey,
+        promptText: clean,
+        mainMessages: state.mainMessages,
+        buckets: state.buckets,
+        activeBucketId: bucketId,
+        lastBucketId: state.lastBucketId,
+        forcedMode: 'BUCKET_FOLLOWUP'
+      });
+      state.isLoading = false;
+      state.loadingTarget = null;
+      bucket.items.push({ question: clean, answer: aiRes.answer });
+      if (aiRes.takeaway) bucket.takeaway = aiRes.takeaway;
+      persistCurrentThread();
+      render({ scrollBucketToBottom: true });
+      return;
+    } catch (err) {
+      state.isLoading = false;
+      state.loadingTarget = null;
+      state.errorBanner = `API Error: ${err.message}`;
+      render();
+      return;
+    }
+  }
 
   bucket.items.push({
     question: clean,
@@ -533,19 +752,109 @@ function handleBucketFollowUp(bucketId, text) {
 }
 
 /**
+ * Ensure a thread ID exists when starting from the Blank New-Thread state
+ */
+function ensureActiveThreadCreated(firstPromptText, customTitle) {
+  if (!state.threadId) {
+    state.threadId = 'thread-' + Date.now();
+    state.threadTitle = customTitle || deriveFallbackTitle(firstPromptText);
+    state.isDemo = false;
+    syncUrlWithThread(state.threadId);
+  }
+}
+
+/**
  * Handle submitting a prompt in the main bottom input bar
  */
-function handlePromptSubmit(text) {
+async function handlePromptSubmit(text) {
   const clean = text.trim();
-  if (!clean) return;
+  if (!clean || state.isLoading) return;
 
-  if (!state.threadId) {
-    resetDemoThread();
-    switchToThread(DEMO_THREAD_ID);
+  state.errorBanner = null;
+
+  // If the user is on a non-demo thread without an API key connected, preserve their typed question and prompt them to either connect an API key or continue to the demo
+  if (!state.isDemo && !state.aiConfig.apiKey) {
+    state.pendingPrompt = clean;
+    if (promptInput) {
+      promptInput.value = clean;
+      autoResizeTextarea(promptInput);
+    }
+    openAiSettingsModal();
+    return;
   }
 
   state.usedPrompts.add(clean);
 
+  // Path 1: Live AI Mode (ONLY for non-demo threads when an API key is connected)
+  if (!state.isDemo && state.aiConfig.apiKey) {
+    try {
+      state.isLoading = true;
+      state.loadingTarget = 'main';
+      render({ scrollMainToBottom: true });
+
+      const aiDecision = await analyzeAndRespondWithAI({
+        apiKey: state.aiConfig.apiKey,
+        promptText: clean,
+        mainMessages: state.mainMessages,
+        buckets: state.buckets,
+        activeBucketId: state.activeBucketId,
+        lastBucketId: state.lastBucketId
+      });
+
+      state.isLoading = false;
+      state.loadingTarget = null;
+
+      if (aiDecision.intent === 'CLARIFICATION' && state.mainMessages.length > 0) {
+        upsertAndOpenBucket({
+          targetMessageId: aiDecision.targetMessageId,
+          anchorPhrase: aiDecision.anchorPhrase,
+          takeaway: aiDecision.takeaway,
+          question: clean,
+          answer: aiDecision.answer
+        });
+        return;
+      }
+
+      if (
+        aiDecision.intent === 'BUCKET_DRILLDOWN' &&
+        aiDecision.bucketId &&
+        state.buckets[aiDecision.bucketId]
+      ) {
+        const bucket = state.buckets[aiDecision.bucketId];
+        bucket.folded = false;
+        state.activeBucketId = bucket.id;
+        state.lastBucketId = bucket.id;
+        bucket.items.push({ question: clean, answer: aiDecision.answer });
+        if (aiDecision.takeaway) bucket.takeaway = aiDecision.takeaway;
+        persistCurrentThread();
+        render({ scrollBucketToBottom: true });
+        return;
+      }
+
+      // Main Progression
+      ensureActiveThreadCreated(clean, aiDecision.threadTitle);
+      foldActiveBucketState();
+
+      state.mainMessages.push({ id: nextMessageId(), role: 'user', rawText: clean });
+      state.mainMessages.push({
+        id: nextMessageId(),
+        role: 'assistant',
+        rawText: aiDecision.answer
+      });
+
+      persistCurrentThread();
+      render({ scrollMainToBottom: true });
+      return;
+    } catch (err) {
+      state.isLoading = false;
+      state.loadingTarget = null;
+      state.errorBanner = `API Error: ${err.message}. Check your API key or quota in API Settings.`;
+      render({ scrollMainToBottom: true });
+      return;
+    }
+  }
+
+  // Path 2: Interactive Demo Thread (Always runs locally using deterministic sandbox data)
   const decision = classifyPromptIntent(
     clean,
     state.mainMessages,
@@ -579,6 +888,7 @@ function handlePromptSubmit(text) {
     return;
   }
 
+  // Main Progression in Demo Thread
   foldActiveBucketState();
 
   state.mainMessages.push({
@@ -608,6 +918,7 @@ function handlePromptSubmit(text) {
   render({ scrollMainToBottom: true });
 }
 
+// Auto-resize multi-line composer textareas cleanly
 function autoResizeTextarea(el) {
   if (!el) return;
   el.style.height = 'auto';
@@ -623,6 +934,7 @@ function resetTextareaHeight(el) {
   el.style.overflowY = 'hidden';
 }
 
+// Event Listeners
 promptForm.addEventListener('submit', (e) => {
   e.preventDefault();
   const val = promptInput.value;
@@ -645,10 +957,12 @@ promptInput.addEventListener('keydown', (e) => {
 suggestionChips.addEventListener('click', (e) => {
   const btn = e.target.closest('.try-chip');
   if (!btn) return;
+  // Stop propagation so re-rendering the chip bar doesn't bubble a detached target up to mainSpine!
   e.stopPropagation();
   handlePromptSubmit(btn.dataset.prompt);
 });
 
+// Sidebar open/close & thread switching
 function toggleSidebar(forceOpen) {
   const isOpen =
     typeof forceOpen === 'boolean'
@@ -705,6 +1019,152 @@ if (navThreadList) {
   });
 }
 
+// API Settings Modal controls with live verification & distinct Connected vs. Disconnected states
+function setSettingsFeedback(message, type = 'neutral') {
+  if (!aiSettingsFeedback) return;
+  if (!message) {
+    aiSettingsFeedback.textContent = '';
+    aiSettingsFeedback.className = 'settings-feedback hidden';
+    return;
+  }
+  aiSettingsFeedback.className = `settings-feedback ${type === 'error' ? 'is-error' : ''}`.trim();
+  aiSettingsFeedback.textContent = message;
+}
+
+function syncAiSettingsModalControls() {
+  const isConnected = Boolean(state.aiConfig.apiKey);
+  if (settingsDisconnectedHeader) {
+    settingsDisconnectedHeader.classList.toggle('hidden', isConnected);
+  }
+  if (aiConnectedView) {
+    aiConnectedView.classList.toggle('hidden', !isConnected);
+  }
+  if (aiKeyField) {
+    aiKeyField.classList.toggle('hidden', isConnected);
+  }
+  if (aiApiKeyInput) {
+    aiApiKeyInput.value = '';
+    aiApiKeyInput.disabled = isConnected;
+  }
+  if (btnSaveApiKey) {
+    btnSaveApiKey.classList.toggle('hidden', isConnected);
+  }
+  if (btnModalTryDemo) {
+    btnModalTryDemo.classList.toggle('hidden', isConnected);
+  }
+  if (btnClearApiKey) {
+    btnClearApiKey.classList.toggle('hidden', !isConnected);
+  }
+  setSettingsFeedback('');
+}
+
+function openAiSettingsModal() {
+  if (!aiSettingsModal) return;
+  syncAiSettingsModalControls();
+  aiSettingsModal.classList.remove('hidden');
+  if (!state.aiConfig.apiKey) {
+    setTimeout(() => aiApiKeyInput?.focus(), 40);
+  }
+}
+
+function closeAiSettingsModal() {
+  if (!aiSettingsModal) return;
+  aiSettingsModal.classList.add('hidden');
+}
+
+if (btnModalTryDemo) {
+  btnModalTryDemo.addEventListener('click', () => {
+    state.pendingPrompt = null;
+    if (promptInput) {
+      promptInput.value = '';
+      resetTextareaHeight(promptInput);
+    }
+    closeAiSettingsModal();
+    resetDemoThread();
+    switchToThread(DEMO_THREAD_ID);
+  });
+}
+
+if (btnOpenAiSettings) {
+  btnOpenAiSettings.addEventListener('click', () => {
+    toggleSidebar(false);
+    openAiSettingsModal();
+  });
+}
+
+if (btnCloseAiSettings) {
+  btnCloseAiSettings.addEventListener('click', closeAiSettingsModal);
+}
+
+if (aiSettingsModal) {
+  aiSettingsModal.addEventListener('click', (e) => {
+    if (e.target === aiSettingsModal) closeAiSettingsModal();
+  });
+}
+
+if (aiSettingsForm) {
+  aiSettingsForm.addEventListener('submit', async (e) => {
+    e.preventDefault();
+    if (state.aiConfig.apiKey) return;
+
+    const rawKey = aiApiKeyInput ? aiApiKeyInput.value.trim() : '';
+    if (!rawKey) {
+      setSettingsFeedback('Please paste your API key before connecting.', 'error');
+      return;
+    }
+
+    if (btnSaveApiKey) {
+      btnSaveApiKey.disabled = true;
+      btnSaveApiKey.textContent = 'Connecting...';
+    }
+    setSettingsFeedback('Verifying API key...', 'neutral');
+
+    try {
+      await verifyApiKey(rawKey);
+      state.aiConfig = saveAIConfig({
+        apiKey: rawKey,
+        model: state.aiConfig.model
+      });
+      state.errorBanner = null;
+      syncAiSettingsModalControls();
+      render();
+
+      const pendingToRun = state.pendingPrompt;
+      state.pendingPrompt = null;
+
+      if (pendingToRun) {
+        if (promptInput) {
+          promptInput.value = '';
+          resetTextareaHeight(promptInput);
+        }
+        closeAiSettingsModal();
+        handlePromptSubmit(pendingToRun);
+      } else {
+        setTimeout(() => {
+          closeAiSettingsModal();
+        }, 650);
+      }
+    } catch (err) {
+      setSettingsFeedback(`Connection failed: ${err.message}`, 'error');
+    } finally {
+      if (btnSaveApiKey) {
+        btnSaveApiKey.disabled = false;
+        btnSaveApiKey.textContent = 'Connect';
+      }
+    }
+  });
+}
+
+if (btnClearApiKey) {
+  btnClearApiKey.addEventListener('click', () => {
+    state.aiConfig = saveAIConfig({ apiKey: '', model: state.aiConfig.model });
+    syncAiSettingsModalControls();
+    setSettingsFeedback('API key disconnected.', 'neutral');
+    render();
+  });
+}
+
+// Floating Text-Selection "Clarify ↗" Pill logic
 function hideSelectionPill() {
   state.pendingSelection = null;
   if (selectionClarifyBtn) {
@@ -757,9 +1217,15 @@ document.addEventListener('selectionchange', () => {
     const msgId = assistantCard.getAttribute('data-msg-id');
     state.pendingSelection = { msgId, text };
 
-    const top = Math.max(44, rect.top - 8);
+    // On mobile/touch screens (or when near the top of the viewport), place the pill below the selection so it never collides with the native OS copy/share menu
+    const placeBelow =
+      window.matchMedia('(hover: none), (max-width: 860px)').matches || rect.top < 56;
+    const top = placeBelow
+      ? Math.min(window.innerHeight - 44, rect.bottom + 8)
+      : Math.max(44, rect.top - 8);
     const left = Math.min(window.innerWidth - 60, Math.max(60, rect.left + rect.width / 2));
 
+    selectionClarifyBtn.classList.toggle('is-below', placeBelow);
     selectionClarifyBtn.style.top = `${top}px`;
     selectionClarifyBtn.style.left = `${left}px`;
     selectionClarifyBtn.classList.remove('hidden');
@@ -767,12 +1233,20 @@ document.addEventListener('selectionchange', () => {
 });
 
 if (selectionClarifyBtn) {
-  selectionClarifyBtn.addEventListener('mousedown', (e) => {
+  const preventSelectionCollapse = (e) => {
     e.preventDefault();
     e.stopPropagation();
-  });
+  };
+  selectionClarifyBtn.addEventListener('mousedown', preventSelectionCollapse);
+  selectionClarifyBtn.addEventListener(
+    'touchstart',
+    (e) => {
+      e.stopPropagation();
+    },
+    { passive: true }
+  );
 
-  selectionClarifyBtn.addEventListener('click', (e) => {
+  selectionClarifyBtn.addEventListener('click', async (e) => {
     e.stopPropagation();
     const pending = state.pendingSelection;
     if (!pending) return;
@@ -791,8 +1265,43 @@ if (selectionClarifyBtn) {
         c.keywords.some((kw) => lowerSel.includes(kw.toLowerCase()))
     );
 
-    const anchorPhrase = matchedConcept ? matchedConcept.phrase : pending.text;
+    const anchorPhrase = matchedConcept
+      ? matchedConcept.phrase
+      : resolveVerbatimAnchor(msg.rawText, pending.text, pending.text);
     const question = `Clarify "${anchorPhrase}"`;
+
+    if (!state.isDemo && state.aiConfig.apiKey) {
+      try {
+        state.isLoading = true;
+        state.loadingTarget = 'main';
+        render();
+        const aiRes = await analyzeAndRespondWithAI({
+          apiKey: state.aiConfig.apiKey,
+          promptText: `Wait, what does "${anchorPhrase}" mean in this context?`,
+          mainMessages: state.mainMessages,
+          buckets: state.buckets,
+          activeBucketId: null,
+          lastBucketId: null
+        });
+        state.isLoading = false;
+        state.loadingTarget = null;
+        upsertAndOpenBucket({
+          targetMessageId: msg.id,
+          anchorPhrase,
+          takeaway: aiRes.takeaway || `${anchorPhrase}: clarified in context.`,
+          question,
+          answer: aiRes.answer
+        });
+        return;
+      } catch (err) {
+        state.isLoading = false;
+        state.loadingTarget = null;
+        state.errorBanner = `API Error: ${err.message}`;
+        render();
+        return;
+      }
+    }
+
     const answer = matchedConcept
       ? matchedConcept.explanation
       : `"${anchorPhrase}" refers to a key building block in this step: isolating how "${anchorPhrase}" works here lets you inspect its exact role without derailing the main lesson thread.`;
@@ -810,6 +1319,7 @@ if (selectionClarifyBtn) {
   });
 }
 
+// Delegated submit & auto-resize listeners for the dedicated Bucket follow-up form
 document.addEventListener('submit', (e) => {
   const bForm = e.target.closest('#bucket-form');
   if (!bForm) return;
@@ -838,8 +1348,10 @@ document.addEventListener('keydown', (e) => {
   }
 });
 
+// Click on the Main Scroll canvas (outside the prompt dock) to smoothly close the open bucket
 mainSpine.addEventListener('click', (e) => {
   if (!state.activeBucketId) return;
+  // Ignore if the clicked element was detached from DOM during a child click handler (e.g. suggestion chips)
   if (!mainSpine.contains(e.target)) return;
   if (e.target.closest('.prompt-dock')) return;
   if (e.target.closest('[data-bucket-id]') || e.target.closest('[data-toggle-group]')) return;
@@ -850,12 +1362,20 @@ mainSpine.addEventListener('click', (e) => {
   foldActiveBucket();
 });
 
+// Keyboard Escape hatch
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && state.activeBucketId) {
-    foldActiveBucket();
+  if (e.key === 'Escape') {
+    if (aiSettingsModal && !aiSettingsModal.classList.contains('hidden')) {
+      closeAiSettingsModal();
+      return;
+    }
+    if (state.activeBucketId) {
+      foldActiveBucket();
+    }
   }
 });
 
+// Mobile Bottom Sheet Drag-Down-to-Close Gesture
 let sheetDragState = null;
 
 bucketPanel.addEventListener(
@@ -930,6 +1450,13 @@ bucketPanel.addEventListener('touchend', finishSheetDrag);
 bucketPanel.addEventListener('touchcancel', finishSheetDrag);
 
 document.addEventListener('click', (e) => {
+  // Error banner quick action
+  if (e.target.closest('#btn-error-open-key')) {
+    openAiSettingsModal();
+    return;
+  }
+
+  // Toggle collapsible "N Clarifications" group under a message
   const groupToggle = e.target.closest('[data-toggle-group]');
   if (groupToggle) {
     const msgId = groupToggle.getAttribute('data-toggle-group');
@@ -938,11 +1465,13 @@ document.addEventListener('click', (e) => {
     return;
   }
 
+  // Close Bucket button or mobile sheet grab handle
   if (e.target.closest('#btn-fold-bucket') || e.target.closest('#sheet-grab-bar')) {
     foldActiveBucket();
     return;
   }
 
+  // Click highlighted anchor or folded summary to open/switch bucket
   const anchorEl = e.target.closest('[data-bucket-id]');
   if (anchorEl && !e.target.closest('.btn-promote-main') && !e.target.closest('#bucket-form')) {
     const bId = anchorEl.getAttribute('data-bucket-id');
@@ -959,6 +1488,7 @@ document.addEventListener('click', (e) => {
     return;
   }
 
+  // Promote bucket item back to Main Chat ("Move to Main Chat")
   const promoteBtn = e.target.closest('.btn-promote-main');
   if (promoteBtn) {
     const bId = promoteBtn.getAttribute('data-bucket-id');
@@ -990,6 +1520,7 @@ document.addEventListener('click', (e) => {
     return;
   }
 
+  // Move a Main Chat Q&A pair back into its Clarification Bucket ("↘ Move to Clarification Bucket")
   const demoteBtn = e.target.closest('.btn-demote-bucket');
   if (demoteBtn) {
     const msgId = demoteBtn.getAttribute('data-msg-id');
@@ -1023,6 +1554,7 @@ document.addEventListener('click', (e) => {
   }
 });
 
+// Initialize workspace: root "/" always loads the Blank New-Thread page; "/?thread=<id>" loads that specific thread
 loadThreadIndex();
 switchToThread(getUrlThreadId(), { fromPopState: true });
 
