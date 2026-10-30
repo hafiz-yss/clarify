@@ -1,30 +1,42 @@
 # Clarify — Context-Anchored AI Learning Interface
 
-**Clarify** solves the "Linear Chat Rabbit-Hole Problem" when learning with AI. Instead of letting follow-up clarifications and sub-questions pollute the main learning timeline, Clarify automatically detects when a prompt is a clarification, highlights the exact anchor phrase in the parent explanation, and routes the sub-thread into a **tethered Side-Panel Bucket**.
+**Clarify** solves the "Linear Chat Rabbit-Hole Problem" when learning with AI. Instead of letting follow-up clarifications and tangents clutter the main learning timeline, Clarify detects when a question is a clarification, highlights the exact anchor phrase in the parent explanation, and isolates the sub-thread into a **tethered Side-Panel Bucket**.
 
-## Core UX & Psychological Design Principles
-1. **Zero Friction / Auto-Routing:** Users type naturally in the main bottom prompt bar. The Semantic Context Router ([`src/router.js`](file:///C:/Users/CLS/Documents/webdev/Clarify/src/router.js)) classifies whether the question is:
-   - `PROGRESSION`: Moving forward on the main learning spine (auto-folds any open bucket).
-   - `CLARIFICATION`: Asking about a specific phrase/concept in an explanation above (auto-highlights the phrase and opens a tethered side-panel bucket).
-   - `BUCKET_DRILLDOWN`: Asking a follow-up ("clarification of a clarification") while a bucket is open.
-2. **Automatic Phrase Anchoring:** When a clarification is detected, the exact concept phrase in the parent explanation is highlighted (`<mark class="concept-anchor">`) and linked to its Side-Panel Bucket with a count badge (`🗂️ N`).
-3. **Nested Drill-Downs & Distillation:** Sub-questions stay grouped inside the active bucket with a concise **Distilled Takeaway** summary at the top.
-4. **Effortless User Escape Hatches:**
-   - **`✓ Done (Fold to Summary)`**: Collapses the bucket into an inline summary strip under the parent message and returns focus to the main chat.
-   - **`↖ Move out of bucket to Main Chat`**: One-click promotion if the user wants a bucketed Q&A moved back into the main linear chat stream.
+## Core Architecture & UX Principles
+
+1. **Semantic Pedagogical Routing (`src/ai.js` & `src/router.js`):**
+   - Evaluates the derived pedagogical intent of each prompt:
+     - `PROGRESSION`: Advances the main learning spine forward (and automatically folds any open bucket into a compact summary pill).
+     - `CLARIFICATION`: Unpacks a concept, step, or assumption from an earlier explanation—highlighting the verbatim anchor phrase (`<mark class="concept-anchor">`) and opening a tethered Side-Panel Bucket.
+     - `BUCKET_DRILLDOWN`: Routes deeper follow-ups directly into the active or most recent Clarification Bucket.
+   - **Context-Window Pruning:** Main-spine queries send only the most recent 6 main messages (excluding side-bucket chatter), while bucket follow-ups send only the single parent message plus that bucket's Q&A history.
+
+2. **Spatial Split-Pane & Mobile Sheet (`src/styles.css`):**
+   - **Desktop:** Full-height 50/50 split workbench that keeps the main explanation and active clarification side-by-side.
+   - **Mobile (`<= 860px`):** iOS-style `78dvh` bottom sheet with drag-to-dismiss and a `22dvh` top peek window that scrolls the highlighted anchor phrase into view.
+
+3. **Lazy Per-Thread Persistence (`src/storage.js`):**
+   - Separates the lightweight sidebar thread index (`clarify_threads_index_v1`) from individual thread payloads (`clarify_thread_v1_<id>`) so only the active thread is loaded into memory.
+   - Includes a self-contained **RSA Public-Key Cryptography (Demo)** thread that runs deterministically offline alongside live BYOK threads (Google Gemini, OpenAI, and Groq).
 
 ## Project Structure
+
 ```text
 Clarify/
-├── index.html        # Main workspace UI (Main Learning Spine + Tethered Bucket Panel + Prompt Dock)
+├── index.html        # Split-pane workspace, collapsible thread sidebar, and API connection modal
 ├── package.json      # Project metadata & scripts
-├── server.js         # Local static development server (Port 3001)
+├── server.js         # Zero-dependency static development server (Port 3001)
 └── src/
-    ├── app.js        # UI state machine, bucket lifecycle, and DOM anchor highlighter
-    ├── router.js     # Semantic Intent Classifier & Anchor Phrase Extractor
-    └── styles.css    # Split-workspace layout & tethered side-panel styling
+    ├── ai.js         # Provider-agnostic live AI router with context pruning & key verification
+    ├── app.js        # UI state machine, rich text/math formatter, and sheet gesture controller
+    ├── router.js     # Deterministic local intent classifier for the interactive demo thread
+    ├── storage.js    # Lazy per-thread localStorage index & payload manager
+    └── styles.css    # Monochrome editorial design system & responsive bottom-sheet layout
 ```
 
-## Development & Engineering Notes
-- **Dual-Mode Architecture Goal:** Support both an instant zero-setup interactive sandbox mode (for portfolio reviewers) and an optional client-side BYOK Live AI mode (e.g., free-tier Gemini API stored strictly in browser `localStorage`) so hosting on Vercel stays 100% free (`0` server compute).
-- **Git & Portfolio Standards:** Maintain a clean, natural, incremental commit history authored under the local global git config (`Yakub Hafiz`), with production static hosting headers (`vercel.json` / `.vercelignore`) when ready to deploy.
+## Running Locally
+
+```bash
+npm start
+# Open http://localhost:3001
+```
