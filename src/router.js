@@ -10,7 +10,7 @@
 const STOP_WORDS = new Set([
   'what', 'is', 'are', 'the', 'a', 'an', 'in', 'on', 'of', 'to', 'for', 'and', 'or',
   'why', 'how', 'does', 'do', 'did', 'you', 'we', 'mean', 'by', 'can', 'explain',
-  'wait', 'about', 'that', 'this', 'it', 'with', 'simple', 'terms', 'example', 'Wait'
+  'wait', 'about', 'that', 'this', 'it', 'with', 'simple', 'terms', 'example'
 ]);
 
 const CLARIFICATION_PATTERNS = /^(wait\b|what\b|why\b|how\s+does|how\s+do|how\s+is|what's|whats|mean\b|explain\b|clarify\b|confused|don't\s+understand|can\s+you\s+give|give\s+an?\s+example|example\s+of|for\s+example)/i;
@@ -27,6 +27,19 @@ export function classifyPromptIntent(promptText, mainMessages, buckets, activeBu
     .replace(/[^a-z0-9\s-]/g, ' ')
     .split(/\s+/)
     .filter((w) => w.length > 2 && !STOP_WORDS.has(w));
+
+  const isProgressionCue = /^(next\b|now\s+let's|move\s+on|okay\s*,?\s*now|now\s+that|show\s+me\s+how\s+decryption|how\s+does\s+decryption|tell\s+me\s+about\s+a\s+new)/i.test(
+    clean
+  );
+
+  // If the user explicitly signals moving forward on the main lesson spine, do not trap in a bucket
+  if (isProgressionCue) {
+    return {
+      intent: 'PROGRESSION',
+      targetMessageId: null,
+      anchorPhrase: null
+    };
+  }
 
   // 1. Check if the user's question matches a specific anchor concept in any assistant message
   const assistantMsgs = [...mainMessages].reverse().filter((m) => m.role === 'assistant');
@@ -57,8 +70,7 @@ export function classifyPromptIntent(promptText, mainMessages, buckets, activeBu
   const candidateBucketId = activeBucketId || lastBucketId || Object.keys(buckets).pop();
   if (candidateBucketId && buckets[candidateBucketId]) {
     const targetBucket = buckets[candidateBucketId];
-    const isProgressionAttempt = /^(next\b|now\s+let's|move\s+on|okay\s*,?\s*now|show\s+me\s+how\s+decryption|tell\s+me\s+about\s+a\s+new)/i.test(clean);
-    if (!isProgressionAttempt && (CLARIFICATION_PATTERNS.test(clean) || tokens.length <= 6)) {
+    if (CLARIFICATION_PATTERNS.test(clean) || tokens.length <= 6) {
       return {
         intent: 'BUCKET_DRILLDOWN',
         bucketId: candidateBucketId,
@@ -81,7 +93,8 @@ export function classifyPromptIntent(promptText, mainMessages, buckets, activeBu
       const hit = tokens.find((t) => sentence.toLowerCase().includes(t));
       if (hit) {
         // Extract a 2-4 word window around the matched keyword
-        const regex = new RegExp(`(\\b\\w+\\s+)?\\b\\w*${hit}\\w*\\b(\\s+\\w+\\b)?`, 'i');
+        const safeHit = hit.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(`(\\b\\w+\\s+)?\\b\\w*${safeHit}\\w*\\b(\\s+\\w+\\b)?`, 'i');
         const match = sentence.match(regex);
         const phrase = match ? match[0].trim() : hit;
         return {
