@@ -90,6 +90,66 @@
     <button type="button" id="selection-clarify-btn" class="selection-clarify-btn hidden" aria-label="Clarify selected text">
       Clarify ↗
     </button>
+
+    <!-- API Key Settings Modal (antigravity.google inspired minimal dialog) -->
+    <div id="ai-settings-modal" class="settings-modal-backdrop hidden" role="dialog" aria-modal="true" aria-labelledby="settings-modal-title">
+      <div class="settings-modal-card">
+        <button type="button" id="btn-close-ai-settings" class="btn-icon btn-icon-close settings-modal-close" aria-label="Close settings">
+          <svg viewBox="0 0 24 24"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+        </button>
+
+        <div id="settings-disconnected-header" class="settings-modal-intro">
+          <h2 id="settings-modal-title" class="settings-modal-title">Connect API Key</h2>
+          <p id="settings-modal-desc" class="settings-modal-desc">
+            Enter your API key to continue with live chat, or explore the interactive demo.
+          </p>
+        </div>
+
+        <!-- Shown when API Key is Connected -->
+        <div id="ai-connected-view" class="settings-connected-view hidden">
+          <div class="settings-connected-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24">
+              <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+              <polyline points="9 12 11 14 15 10"></polyline>
+            </svg>
+          </div>
+          <div class="settings-connected-text">
+            <span class="settings-connected-title">API Connected</span>
+            <span class="settings-connected-sub">Live chat and semantic routing are active.</span>
+          </div>
+        </div>
+
+        <form id="ai-settings-form" class="settings-modal-form" autocomplete="off">
+          <div id="ai-key-field" class="settings-field">
+            <input
+              type="text"
+              id="ai-api-key-input"
+              class="settings-input settings-key-masked"
+              placeholder="Paste your API key..."
+              aria-label="API Key"
+              autocomplete="off"
+              autocorrect="off"
+              autocapitalize="off"
+              spellcheck="false"
+              data-1p-ignore="true"
+              data-lpignore="true"
+            />
+          </div>
+          <div id="ai-settings-feedback" class="settings-feedback hidden"></div>
+          <div class="settings-modal-actions">
+            <button type="button" id="btn-clear-api-key" class="btn settings-btn settings-btn-disconnect hidden">
+              Disconnect Key
+            </button>
+            <button type="button" id="btn-modal-try-demo" class="btn settings-btn settings-btn-outline">
+              Try Demo
+            </button>
+            <button type="submit" id="btn-save-api-key" class="btn settings-btn settings-btn-solid">
+              Connect
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
   </div>
 
   <script type="module" src="./src/app.js"></script>
